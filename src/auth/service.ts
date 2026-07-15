@@ -107,10 +107,15 @@ export async function ensureAdmin(email: string, password: string, name = "Admin
   if (!e || !password) return;
   const { rows } = await getPool().query(`SELECT "id","role" FROM "signal"."User" WHERE "email" = $1`, [e]);
   if (rows[0]) {
-    if (rows[0].role !== "ADMIN") {
-      await getPool().query(`UPDATE "signal"."User" SET "role" = 'ADMIN', "updatedAt" = now() WHERE "email" = $1`, [e]);
-      console.log(`[admin] promoted ${e} to ADMIN`);
-    }
+    // Keep the bootstrap admin's role AND password in sync with the env, so setting
+    // SIGNAL_ADMIN_PASSWORD (and redeploying) always yields a working login — even if
+    // the row already existed with a stale/unknown password. The env is the source of
+    // truth for this account.
+    await getPool().query(
+      `UPDATE "signal"."User" SET "role" = 'ADMIN', "passwordHash" = $2, "updatedAt" = now() WHERE "email" = $1`,
+      [e, hashPassword(password)],
+    );
+    console.log(`[admin] ensured admin ${e} (role + password synced from env)`);
     return;
   }
   await getPool().query(
