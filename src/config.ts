@@ -16,9 +16,6 @@ export const config = {
     expiresInSec: num("JWT_EXPIRES_IN_SEC", 7 * 24 * 60 * 60),
   },
 
-  /** TradingBackend WS feed for real-time relay (optional; polling fallback otherwise). */
-  tradingWsUrl: process.env.TRADING_WS_URL?.trim() ?? "",
-
   /** TradingBackend REST base — the chart proxies its operator-key candle history from here. */
   tradingApiUrl: process.env.TRADING_API_URL?.trim() || "http://localhost:8000",
   /** Shared secret sent to the TradingBackend's /api/market/history (must match its SERVICE_TOKEN). */

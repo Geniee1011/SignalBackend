@@ -1,16 +1,11 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-import { getPool, closePool } from "./pool.js";
+import { applySchema } from "./apply-schema.js";
+import { closePool } from "./pool.js";
 
-/* Apply the signal-schema DDL. Only ever touches the "signal" schema — never the
-   trading platform's tables. Run with: npm run db:migrate */
-
-const here = dirname(fileURLToPath(import.meta.url));
-const sql = readFileSync(join(here, "schema.sql"), "utf8");
+/* CLI entrypoint for the signal-schema migration. Run with: npm run db:migrate.
+   The same idempotent DDL also runs automatically on server startup. */
 
 try {
-  await getPool().query(sql);
+  await applySchema();
   console.log('✓ Signal schema applied (signal."User").');
 } catch (err) {
   console.error("✗ Migration failed:", (err as Error).message);

@@ -20,10 +20,23 @@ import {
    polling the shared DB and broadcasting on change (upgradeable to a direct
    TradingBackend WS relay / Postgres LISTEN-NOTIFY later). */
 
-function cors(res: ServerResponse) {
-  res.setHeader("Access-Control-Allow-Origin", config.corsOrigin);
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+function cors(req: IncomingMessage, res: ServerResponse) {
+  // CORS_ORIGIN may be "*" (any), a single origin, or a comma-separated allowlist
+  // (e.g. the Vercel production domain + preview URLs). We reflect the request's
+  // Origin when it's allowed so the browser accepts the response.
+  const origin = req.headers.origin;
+  const allow = config.corsOrigin.trim();
+  let allowOrigin = "*";
+  if (allow !== "*") {
+    const list = allow.split(",").map((s) => s.trim()).filter(Boolean);
+    allowOrigin = origin && list.includes(origin) ? origin : (list[0] ?? "*");
+    res.setHeader("Vary", "Origin");
+  }
+  res.setHeader("Access-Control-Allow-Origin", allowOrigin);
+  // PUT/PATCH are needed by the admin access editor; without them its preflight fails.
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+  res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 function json(res: ServerResponse, status: number, body: unknown) {
@@ -103,7 +116,7 @@ export function createSignalServer() {
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse) {
-  cors(res);
+  cors(req, res);
   if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
 
   const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
