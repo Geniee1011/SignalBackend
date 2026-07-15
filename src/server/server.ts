@@ -4,7 +4,6 @@ import { config } from "../config.js";
 import { register, login, verifyToken, getUserById, type TokenPayload } from "../auth/service.js";
 import { getSignals } from "../signals/source.js";
 import { getPerformance } from "../signals/performance.js";
-import { buildDashboard, DASHBOARD_MARKETS } from "../signals/dashboard.js";
 import {
   applyAccess,
   getUserAccess,
@@ -161,16 +160,6 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const sinceMs = sinceParam ? Number(sinceParam) : undefined;
     const access = await getUserAccess(payload.sub);
     return json(res, 200, await getPerformance({ sinceMs, market, access }));
-  }
-
-  // Per-market overview for the dashboard home page (access-scoped).
-  if (path === "/api/dashboard" && req.method === "GET") {
-    const payload = requireUser(req);
-    if (!payload) return json(res, 401, { error: "unauthorized" });
-    const [signals, access] = await Promise.all([getSignals(), getUserAccess(payload.sub)]);
-    const scoped = applyAccess(signals, access);
-    const allowed = access.suspended ? [] : access.markets.length ? access.markets : DASHBOARD_MARKETS;
-    return json(res, 200, buildDashboard(scoped, allowed));
   }
 
   // --- admin (ADMIN role required) ---
