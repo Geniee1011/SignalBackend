@@ -102,14 +102,15 @@ export async function getActiveSignals(): Promise<Signal[]> {
   });
 }
 
-/** Closed signals within the rolling window — inverted, with signal-side P&L. */
-export async function getClosedSignals(sinceMs: number): Promise<Signal[]> {
+/** Closed signals within a window — inverted, with signal-side P&L.
+ *  `untilMs` is inclusive; omit it for "up to now". */
+export async function getClosedSignals(sinceMs: number, untilMs?: number): Promise<Signal[]> {
   const { rows } = await getPool().query(
     `SELECT "id","symbol","side","quantity","entryPrice","exitPrice","realizedPnl","openedAt","closedAt","phaseAtOpen"
      FROM "public"."ClosedPosition"
-     WHERE "closedAt" >= $1
+     WHERE "closedAt" >= $1 AND ($2::timestamptz IS NULL OR "closedAt" <= $2)
      ORDER BY "closedAt" DESC`,
-    [new Date(sinceMs)],
+    [new Date(sinceMs), untilMs != null ? new Date(untilMs) : null],
   );
   return rows.map((r) => {
     const signalPnl = -num(r.realizedPnl); // counter side
@@ -134,16 +135,25 @@ export async function getClosedSignals(sinceMs: number): Promise<Signal[]> {
   });
 }
 
-/** Active + recent-closed signals for the Signals page (last N hours). */
-export async function getSignals(windowHours = config.signalWindowHours): Promise<Signal[]> {
-  const since = Date.now() - windowHours * 3_600_000;
-  const [active, closed] = await Promise.all([getActiveSignals(), getClosedSignals(since)]);
-  // Design-demo fallback: when there are no live trades in the window, present
-  // recent real trades re-based into the window so the page/chart aren't empty.
-  // Real data always wins — this only fires on a truly empty live set.
+/**
+ * Active + closed signals within an explicit window. `untilMs` is inclusive;
+ * omit it for "up to now". Open signals are included when they were opened inside
+ * the window, so a past range shows what was running at the time.
+ */
+export async function getSignalsRange(sinceMs: number, untilMs?: number): Promise<Signal[]> {
+  const [activeAll, closed] = await Promise.all([getActiveSignals(), getClosedSignals(sinceMs, untilMs)]);
+  const active = activeAll.filter((s) => s.openedAt >= sinceMs && (untilMs == null || s.openedAt <= untilMs));
+  // Design-demo fallback: when there are no live trades in the window, synthesize a
+  // plausible set so the page/chart aren't empty. Real data always wins — this only
+  // fires on a truly empty live set.
   if (active.length === 0 && closed.length === 0 && demoSignalsEnabled) {
-    return buildDemoSignals(windowHours);
+    return buildDemoSignals(sinceMs, untilMs);
   }
   // Active first, then closed newest-first.
   return [...active, ...closed];
+}
+
+/** Active + recent-closed signals for the Signals page (last N hours). */
+export async function getSignals(windowHours = config.signalWindowHours): Promise<Signal[]> {
+  return getSignalsRange(Date.now() - windowHours * 3_600_000);
 }

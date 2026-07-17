@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { WebSocketServer, WebSocket } from "ws";
 import { config } from "../config.js";
 import { register, login, verifyToken, getUserById, type TokenPayload } from "../auth/service.js";
-import { getSignals } from "../signals/source.js";
+import { getSignals, getSignalsRange } from "../signals/source.js";
 import { getPerformance } from "../signals/performance.js";
 import {
   applyAccess,
@@ -59,6 +59,14 @@ function bearer(req: IncomingMessage): string | null {
 
 function requireUser(req: IncomingMessage): TokenPayload | null {
   return verifyToken(bearer(req) ?? "");
+}
+
+/** Parse a ms-timestamp query param. `0` is meaningful (all time), so test presence. */
+function msParam(url: URL, p: string): number | undefined {
+  const raw = url.searchParams.get(p);
+  if (raw == null || raw === "") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
 /** Verify the caller is an ADMIN (role checked against the DB, not just the token). */
@@ -148,18 +156,30 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   if (path === "/api/signals" && req.method === "GET") {
     const payload = requireUser(req);
     if (!payload) return json(res, 401, { error: "unauthorized" });
+    // An explicit since/until window (the chart's calendar) wins over the rolling
+    // `hours` window used by the Signals page.
+    const since = msParam(url, "since");
+    const until = msParam(url, "until");
     const hours = Number(url.searchParams.get("hours")) || config.signalWindowHours;
-    const [signals, access] = await Promise.all([getSignals(hours), getUserAccess(payload.sub)]);
+    const [signals, access] = await Promise.all([
+      since != null || until != null ? getSignalsRange(since ?? 0, until) : getSignals(hours),
+      getUserAccess(payload.sub),
+    ]);
     return json(res, 200, applyAccess(signals, access));
   }
   if (path === "/api/performance" && req.method === "GET") {
     const payload = requireUser(req);
     if (!payload) return json(res, 401, { error: "unauthorized" });
-    const sinceParam = url.searchParams.get("since");
     const market = url.searchParams.get("market") || undefined;
-    const sinceMs = sinceParam ? Number(sinceParam) : undefined;
+    // `since=0` is meaningful (all time), so parse by presence — not truthiness.
+    const ms = (p: string) => {
+      const raw = url.searchParams.get(p);
+      if (raw == null || raw === "") return undefined;
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : undefined;
+    };
     const access = await getUserAccess(payload.sub);
-    return json(res, 200, await getPerformance({ sinceMs, market, access }));
+    return json(res, 200, await getPerformance({ sinceMs: ms("since"), untilMs: ms("until"), market, access }));
   }
 
   // --- admin (ADMIN role required) ---

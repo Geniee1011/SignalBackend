@@ -10,6 +10,7 @@ const dayKey = (ms: number) => new Date(ms).toISOString().slice(0, 10); // YYYY-
 
 export interface PerformanceFilters {
   sinceMs?: number;
+  untilMs?: number; // inclusive upper bound; undefined = up to now
   market?: string; // filter to one market (e.g. "ES"); undefined = all
   access?: AccessConfig; // the subscriber's entitlements — track record is scoped to it
 }
@@ -45,7 +46,7 @@ export interface Performance {
 
 export async function getPerformance(filters: PerformanceFilters = {}): Promise<Performance> {
   const since = filters.sinceMs ?? Date.now() - 90 * 86_400_000; // default: last 90 days
-  let closed = await getClosedSignals(since);
+  let closed = await getClosedSignals(since, filters.untilMs);
   if (filters.market) closed = closed.filter((s) => s.market === filters.market);
   if (filters.access) closed = scopeToAccess(closed, filters.access);
 
