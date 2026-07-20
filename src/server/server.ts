@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { WebSocketServer, WebSocket } from "ws";
 import { config } from "../config.js";
 import { register, login, verifyToken, getUserById, type TokenPayload } from "../auth/service.js";
-import { getSignals, getSignalsRange } from "../signals/source.js";
+import { getSignals, getSignalsRange, getMirrorSignals } from "../signals/source.js";
 import { getPerformance } from "../signals/performance.js";
 import {
   applyAccess,
@@ -103,7 +103,10 @@ export function createSignalServer() {
     if (wss.clients.size === 0 || ticking) return;
     ticking = true; // a slow upstream mark must not let ticks pile up on each other
     try {
-      const signals = await getSignals();
+      // Must match what the Signals page fetched over REST (`all=1`). Pushing the
+      // 24h set here would silently replace the all-time list on the first frame
+      // and make the Closed count jump seconds after load.
+      const signals = await getMirrorSignals();
       // P&L is part of the identity of a live signal: the admin Positions page marks
       // open trades to market ~1s, and the mirror has to move with it. Leaving
       // unrealizedPnl out of the hash meant an open signal's P&L froze until its
@@ -127,7 +130,7 @@ export function createSignalServer() {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
     const payload = verifyToken(url.searchParams.get("token") ?? "");
     (ws as WebSocket & { _uid?: string | null })._uid = payload?.sub ?? null;
-    void getSignals().then((signals) => sendFiltered(ws, signals)).catch(() => {});
+    void getMirrorSignals().then((signals) => sendFiltered(ws, signals)).catch(() => {});
   });
   http.on("close", () => clearInterval(timer));
 
@@ -172,9 +175,16 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     // `hours` window used by the Signals page.
     const since = msParam(url, "since");
     const until = msParam(url, "until");
+    // `all=1` = the admin-Positions mirror: every closed signal (capped), not a
+    // rolling window. Without it the Signals page and the admin page disagree.
+    const all = url.searchParams.get("all") === "1";
     const hours = Number(url.searchParams.get("hours")) || config.signalWindowHours;
     const [signals, access] = await Promise.all([
-      since != null || until != null ? getSignalsRange(since ?? 0, until) : getSignals(hours),
+      since != null || until != null
+        ? getSignalsRange(since ?? 0, until)
+        : all
+          ? getMirrorSignals()
+          : getSignals(hours),
       getUserAccess(payload.sub),
     ]);
     return json(res, 200, applyAccess(signals, access));

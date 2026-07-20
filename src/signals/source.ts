@@ -130,27 +130,30 @@ export async function getClosedSignals(sinceMs: number, untilMs?: number): Promi
      ORDER BY "closedAt" DESC`,
     [new Date(sinceMs), untilMs != null ? new Date(untilMs) : null],
   );
-  return rows.map((r) => {
-    const signalPnl = -num(r.realizedPnl); // counter side
-    return {
-      id: `cls:${r.id}`,
-      symbol: r.symbol,
-      market: market(r.symbol),
-      side: invert(r.side),
-      entry: num(r.entryPrice),
-      stopLoss: null, // historical bracket levels aren't retained on the closed row
-      takeProfit: null,
-      exit: num(r.exitPrice),
-      quantity: num(r.quantity),
-      conviction: r.phaseAtOpen != null ? num(r.phaseAtOpen) : 1,
-      status: "closed" as const,
-      openedAt: new Date(r.openedAt).getTime(),
-      closedAt: new Date(r.closedAt).getTime(),
-      pnl: Math.round(signalPnl * 100) / 100,
-      unrealizedPnl: null,
-      win: Math.abs(signalPnl) < 0.005 ? null : signalPnl > 0,
-    };
-  });
+  return rows.map(toClosedSignal);
+}
+
+/** Map a ClosedPosition row to its inverted (counter) signal. */
+function toClosedSignal(r: Record<string, unknown>): Signal {
+  const signalPnl = -num(r.realizedPnl); // counter side
+  return {
+    id: `cls:${r.id}`,
+    symbol: r.symbol as string,
+    market: market(r.symbol as string),
+    side: invert(r.side as string),
+    entry: num(r.entryPrice),
+    stopLoss: null, // historical bracket levels aren't retained on the closed row
+    takeProfit: null,
+    exit: num(r.exitPrice),
+    quantity: num(r.quantity),
+    conviction: r.phaseAtOpen != null ? num(r.phaseAtOpen) : 1,
+    status: "closed",
+    openedAt: new Date(r.openedAt as string).getTime(),
+    closedAt: new Date(r.closedAt as string).getTime(),
+    pnl: Math.round(signalPnl * 100) / 100,
+    unrealizedPnl: null,
+    win: Math.abs(signalPnl) < 0.005 ? null : signalPnl > 0,
+  };
 }
 
 /**
@@ -174,4 +177,32 @@ export async function getSignalsRange(sinceMs: number, untilMs?: number): Promis
 /** Active + recent-closed signals for the Signals page (last N hours). */
 export async function getSignals(windowHours = config.signalWindowHours): Promise<Signal[]> {
   return getSignalsRange(Date.now() - windowHours * 3_600_000);
+}
+
+/**
+ * Active + the most recent `limit` closed signals, ALL TIME.
+ *
+ * This is the mirror of the admin Positions page, which lists every closed
+ * position (capped at 500) rather than a rolling window — the Signals page uses
+ * this so its Active/Closed counts line up with the admin's row-for-row. A 24h
+ * window here made the two pages disagree whenever trading paused for a day.
+ */
+export async function getMirrorSignals(limit = 500): Promise<Signal[]> {
+  const [active, closed] = await Promise.all([getActiveSignals(), getRecentClosedSignals(limit)]);
+  if (active.length === 0 && closed.length === 0 && demoSignalsEnabled) {
+    return buildDemoSignals(Date.now() - 30 * 86_400_000);
+  }
+  return [...active, ...closed];
+}
+
+/** The newest `limit` closed signals regardless of age — mirrors adminListClosedPositions. */
+export async function getRecentClosedSignals(limit = 500): Promise<Signal[]> {
+  const { rows } = await getPool().query(
+    `SELECT "id","symbol","side","quantity","entryPrice","exitPrice","realizedPnl","openedAt","closedAt","phaseAtOpen"
+     FROM "public"."ClosedPosition"
+     ORDER BY "closedAt" DESC
+     LIMIT $1`,
+    [limit],
+  );
+  return rows.map(toClosedSignal);
 }
