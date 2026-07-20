@@ -36,6 +36,42 @@ export function getMultiplier(symbol: string): number {
   return MULTIPLIER[symbol] ?? 1;
 }
 
+/** Warn once per reason, so a persistent outage doesn't spam the log every tick. */
+const warned = new Set<string>();
+function warnOnce(key: string, msg: string) {
+  if (warned.has(key)) return;
+  warned.add(key);
+  console.warn(`[marks] ${msg}`);
+}
+
+/**
+ * Batch live marks from the TradingBackend's quote map — the exact source the
+ * admin Positions page marks against. One request covers every symbol.
+ * Returns an empty map (not a throw) when the upstream is unreachable.
+ */
+async function fetchLiveMarks(symbols: string[]): Promise<Map<string, number>> {
+  const headers: Record<string, string> = {};
+  if (config.serviceToken) headers["x-service-token"] = config.serviceToken;
+  const url = `${config.tradingApiUrl}/api/market/marks?symbols=${encodeURIComponent(symbols.join(","))}`;
+  const out = new Map<string, number>();
+  try {
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    if (!res.ok) {
+      warnOnce(`status:${res.status}`, `trading backend returned ${res.status} for /api/market/marks — open P&L will fall back to candles/stored values`);
+      return out;
+    }
+    const data = (await res.json()) as Record<string, unknown>;
+    for (const [symbol, raw] of Object.entries(data ?? {})) {
+      const price = Number(raw);
+      if (Number.isFinite(price) && price > 0) out.set(symbol, price);
+    }
+    warned.clear(); // recovered
+  } catch (err) {
+    warnOnce("unreachable", `cannot reach ${config.tradingApiUrl} (${(err as Error).message}) — is the trading backend running and TRADING_API_URL correct?`);
+  }
+  return out;
+}
+
 async function fetchMark(symbol: string): Promise<number | undefined> {
   const headers: Record<string, string> = {};
   if (config.serviceToken) headers["x-service-token"] = config.serviceToken;
@@ -62,12 +98,27 @@ export async function getMarks(symbols: string[]): Promise<Map<string, number>> 
   const out = new Map<string, number>();
   const pending: Promise<void>[] = [];
 
-  for (const symbol of wanted) {
-    const hit = cache.get(symbol);
-    if (hit && now - hit.at < MARK_TTL_MS) {
-      out.set(symbol, hit.price);
-      continue;
+  // Anything still fresh in cache needs no upstream call at all.
+  const stale = wanted.filter((s) => {
+    const hit = cache.get(s);
+    if (hit && now - hit.at < MARK_TTL_MS) { out.set(s, hit.price); return false; }
+    return true;
+  });
+
+  // Preferred path: one batch call for the live quotes the admin page uses.
+  if (stale.length > 0) {
+    const live = await fetchLiveMarks(stale);
+    for (const [symbol, price] of live) {
+      cache.set(symbol, { price, at: Date.now() });
+      out.set(symbol, price);
     }
+  }
+
+  // Fallback for anything the quote map couldn't price (feed not warmed up for
+  // that symbol yet): derive it from the most recent 1-minute candle.
+  for (const symbol of stale) {
+    if (out.has(symbol)) continue;
+    const hit = cache.get(symbol);
     let job = inflight.get(symbol);
     if (!job) {
       job = fetchMark(symbol).finally(() => inflight.delete(symbol));
