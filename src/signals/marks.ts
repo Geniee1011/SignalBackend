@@ -1,4 +1,5 @@
 import { config } from "../config.js";
+import { getPool } from "../db/pool.js";
 
 /* Live mark prices for open signals.
  *
@@ -13,6 +14,8 @@ import { config } from "../config.js";
 
 const MARK_TTL_MS = 2_000;
 const REQUEST_TIMEOUT_MS = 4_000;
+/** A published mark older than this is treated as absent (trading backend down). */
+const MARK_MAX_AGE_MS = 30_000;
 
 interface Entry {
   price: number;
@@ -83,6 +86,37 @@ async function fetchLiveMarks(symbols: string[]): Promise<Map<string, number>> {
   return out;
 }
 
+/**
+ * PREFERRED source: the shared "MarketMark" table, which the trading backend
+ * upserts every second from the same in-memory quote map its own admin page and
+ * trader charts use. No HTTP hop, no service token, no TRADING_API_URL — it works
+ * off the DATABASE_URL both services already share.
+ *
+ * Rows older than MARK_MAX_AGE_MS are ignored: a stopped trading backend must
+ * surface as "no price" rather than a frozen number that looks live.
+ */
+async function fetchDbMarks(symbols: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  try {
+    const { rows } = await getPool().query(
+      `SELECT "symbol","price","multiplier"
+       FROM "public"."MarketMark"
+       WHERE "symbol" = ANY($1) AND "updatedAt" >= now() - ($2 || ' milliseconds')::interval`,
+      [symbols, String(MARK_MAX_AGE_MS)],
+    );
+    for (const r of rows) {
+      const price = Number(r.price);
+      if (Number.isFinite(price) && price > 0) out.set(r.symbol as string, price);
+      const mult = Number(r.multiplier);
+      if (Number.isFinite(mult) && mult > 0) upstreamMultiplier.set(r.symbol as string, mult);
+    }
+  } catch (err) {
+    // Table missing (trading backend not yet migrated) → fall through to HTTP.
+    warnOnce("db", `MarketMark unreadable (${(err as Error).message}) — falling back to the trading API`);
+  }
+  return out;
+}
+
 async function fetchMark(symbol: string): Promise<number | undefined> {
   const headers: Record<string, string> = {};
   if (config.serviceToken) headers["x-service-token"] = config.serviceToken;
@@ -116,9 +150,20 @@ export async function getMarks(symbols: string[]): Promise<Map<string, number>> 
     return true;
   });
 
-  // Preferred path: one batch call for the live quotes the admin page uses.
+  // 1. Shared DB — the default path, needs no cross-service configuration.
   if (stale.length > 0) {
-    const live = await fetchLiveMarks(stale);
+    const fromDb = await fetchDbMarks(stale);
+    for (const [symbol, price] of fromDb) {
+      cache.set(symbol, { price, at: Date.now() });
+      out.set(symbol, price);
+    }
+  }
+
+  // 2. Trading API — covers a trading backend that hasn't picked up the marks
+  //    table yet (older deploy), or a symbol it hasn't published.
+  const missing = stale.filter((s) => !out.has(s));
+  if (missing.length > 0) {
+    const live = await fetchLiveMarks(missing);
     for (const [symbol, price] of live) {
       cache.set(symbol, { price, at: Date.now() });
       out.set(symbol, price);
