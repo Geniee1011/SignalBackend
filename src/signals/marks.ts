@@ -23,8 +23,14 @@ const cache = new Map<string, Entry>();
 /** In-flight fetches, so N concurrent callers for one symbol share a single request. */
 const inflight = new Map<string, Promise<number | undefined>>();
 
-/** Contract point value in USD — mirrors TradingBackend's `instruments.ts`. */
-const MULTIPLIER: Record<string, number> = {
+/* Contract point value in USD.
+ *
+ * The AUTHORITATIVE value ships alongside each mark from the trading backend, so
+ * the two services can never disagree about how a point converts to dollars. This
+ * table is only a cold-start fallback for the candle path (used before any marks
+ * response has been seen); if it ever drifts from the trading backend's
+ * `instruments.ts`, the upstream value still wins. */
+const FALLBACK_MULTIPLIER: Record<string, number> = {
   ES: 50, MES: 5,
   NQ: 20, MNQ: 2,
   YM: 5, MYM: 0.5,
@@ -32,8 +38,11 @@ const MULTIPLIER: Record<string, number> = {
   GC: 100, MGC: 10,
 };
 
+/** Multipliers learned from the trading backend — the source of truth. */
+const upstreamMultiplier = new Map<string, number>();
+
 export function getMultiplier(symbol: string): number {
-  return MULTIPLIER[symbol] ?? 1;
+  return upstreamMultiplier.get(symbol) ?? FALLBACK_MULTIPLIER[symbol] ?? 1;
 }
 
 /** Warn once per reason, so a persistent outage doesn't spam the log every tick. */
@@ -60,10 +69,12 @@ async function fetchLiveMarks(symbols: string[]): Promise<Map<string, number>> {
       warnOnce(`status:${res.status}`, `trading backend returned ${res.status} for /api/market/marks — open P&L will fall back to candles/stored values`);
       return out;
     }
-    const data = (await res.json()) as Record<string, unknown>;
-    for (const [symbol, raw] of Object.entries(data ?? {})) {
-      const price = Number(raw);
+    const data = (await res.json()) as Record<string, { mark?: unknown; multiplier?: unknown }>;
+    for (const [symbol, entry] of Object.entries(data ?? {})) {
+      const price = Number(entry?.mark);
       if (Number.isFinite(price) && price > 0) out.set(symbol, price);
+      const mult = Number(entry?.multiplier);
+      if (Number.isFinite(mult) && mult > 0) upstreamMultiplier.set(symbol, mult);
     }
     warned.clear(); // recovered
   } catch (err) {
