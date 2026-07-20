@@ -67,7 +67,6 @@ export async function getActiveSignals(): Promise<Signal[]> {
   const { rows } = await getPool().query(
     `SELECT l."id", l."symbol", l."side", l."quantity", l."entryPrice", l."openedAt", l."accountId",
             l."phaseAtOpen", a."riskPhase",
-            p."unrealizedPnl" AS "storedUnrealized",
             (SELECT o."requestedPrice" FROM "public"."Order" o
               WHERE o."accountId" = l."accountId" AND o."symbol" = l."symbol"
                 AND o."status" = 'PENDING' AND o."ocoGroupId" IS NOT NULL AND o."type" = 'STOP'
@@ -78,7 +77,6 @@ export async function getActiveSignals(): Promise<Signal[]> {
               ORDER BY o."updatedAt" DESC LIMIT 1) AS "traderTarget"
      FROM "public"."PositionLot" l
      JOIN "public"."Account" a ON a."id" = l."accountId"
-     LEFT JOIN "public"."Position" p ON p."accountId" = l."accountId" AND p."symbol" = l."symbol"
      ORDER BY l."openedAt" DESC`,
   );
   if (rows.length === 0) return [];
@@ -93,10 +91,14 @@ export async function getActiveSignals(): Promise<Signal[]> {
     // gives it directly: (mark − entry) × qty × signalDirection × multiplier.
     const dir = side === "LONG" ? 1 : -1;
     const mark = marks.get(r.symbol);
+    // No mark → P&L is UNKNOWN, not zero. `Position.unrealizedPnl` is never written
+    // by the trading backend (it marks in memory and pushes over WS), so falling back
+    // to it produced a confident-looking "+$0" that never moved. null renders as "—",
+    // which is honest and makes a broken TRADING_API_URL visible instead of silent.
     const unrealizedPnl =
       mark != null && mark > 0
         ? Math.round((mark - entry) * qty * dir * getMultiplier(r.symbol) * 100) / 100
-        : Math.round(-num(r.storedUnrealized) * 100) / 100; // upstream unreachable → stored mirror
+        : null;
 
     return {
       id: `lot:${r.id}`,
