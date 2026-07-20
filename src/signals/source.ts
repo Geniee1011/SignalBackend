@@ -1,6 +1,7 @@
 import { getPool } from "../db/pool.js";
 import { config } from "../config.js";
 import { buildDemoSignals, demoSignalsEnabled } from "./demo.js";
+import { getMarks, getMultiplier } from "./marks.js";
 
 /* Signal source — the core of the product. Reads the trading platform's trades
  * (READ-ONLY, from public.*) and turns each into a COUNTER signal:
@@ -45,58 +46,75 @@ export interface Signal {
 }
 
 /**
- * Live SL/TP per (account, symbol) from the trader's resting bracket legs:
- * a PENDING STOP order is the trader's stop-loss, a PENDING LIMIT its take-profit.
- * Returns the TRADER's levels (caller swaps them for the inverted signal).
+ * Active signals — the exact mirror of the TradingApp admin "Positions → Active"
+ * tab, inverted.
+ *
+ * This query is deliberately identical in shape to `adminListOpenPositions` in the
+ * TradingBackend, because the signal feed must be that page's opposite row-for-row:
+ *   - reads PositionLot (ONE ROW PER ENTRY TRADE), not the netted Position line —
+ *     the admin CRM lists every entry separately, so netting here would collapse
+ *     two trades into one signal and lose the per-trade entry price + open time
+ *   - SL/TP come from the newest resting OCO exit legs (STOP = trader's stop,
+ *     LIMIT = trader's target), matched per (account, symbol)
+ *   - conviction = the trade's phase when it opened, falling back to the account's
+ *     current risk phase
+ *
+ * P&L is marked to the LIVE quote (see marks.ts) rather than read from the stored
+ * `unrealizedPnl` column, which is a stale snapshot — the admin page marks to
+ * market too, and a signal quoting a stale P&L would contradict it.
  */
-async function bracketLevels(): Promise<Map<string, { sl: number | null; tp: number | null }>> {
-  const { rows } = await getPool().query(
-    `SELECT "accountId","symbol","type","stopPrice","requestedPrice"
-     FROM "public"."Order"
-     WHERE "status" = 'PENDING' AND "ocoGroupId" IS NOT NULL`,
-  );
-  const map = new Map<string, { sl: number | null; tp: number | null }>();
-  for (const r of rows) {
-    const key = `${r.accountId}|${r.symbol}`;
-    const e = map.get(key) ?? { sl: null, tp: null };
-    if (r.type === "STOP" || r.type === "STOP_LIMIT") e.sl = r.stopPrice != null ? num(r.stopPrice) : e.sl;
-    else if (r.type === "LIMIT") e.tp = r.requestedPrice != null ? num(r.requestedPrice) : e.tp;
-    map.set(key, e);
-  }
-  return map;
-}
-
-/** Active signals — one per open position on the trading platform, inverted. */
 export async function getActiveSignals(): Promise<Signal[]> {
-  const [{ rows }, brackets] = await Promise.all([
-    getPool().query(
-      `SELECT p."id", p."accountId", p."symbol", p."side", p."quantity", p."averagePrice", p."openedAt",
-              p."unrealizedPnl", COALESCE(a."riskPhase", 1) AS "riskPhase"
-       FROM "public"."Position" p JOIN "public"."Account" a ON a."id" = p."accountId"
-       ORDER BY p."openedAt" DESC`,
-    ),
-    bracketLevels(),
-  ]);
+  const { rows } = await getPool().query(
+    `SELECT l."id", l."symbol", l."side", l."quantity", l."entryPrice", l."openedAt", l."accountId",
+            l."phaseAtOpen", a."riskPhase",
+            p."unrealizedPnl" AS "storedUnrealized",
+            (SELECT o."requestedPrice" FROM "public"."Order" o
+              WHERE o."accountId" = l."accountId" AND o."symbol" = l."symbol"
+                AND o."status" = 'PENDING' AND o."ocoGroupId" IS NOT NULL AND o."type" = 'STOP'
+              ORDER BY o."updatedAt" DESC LIMIT 1) AS "traderStop",
+            (SELECT o."requestedPrice" FROM "public"."Order" o
+              WHERE o."accountId" = l."accountId" AND o."symbol" = l."symbol"
+                AND o."status" = 'PENDING' AND o."ocoGroupId" IS NOT NULL AND o."type" = 'LIMIT'
+              ORDER BY o."updatedAt" DESC LIMIT 1) AS "traderTarget"
+     FROM "public"."PositionLot" l
+     JOIN "public"."Account" a ON a."id" = l."accountId"
+     LEFT JOIN "public"."Position" p ON p."accountId" = l."accountId" AND p."symbol" = l."symbol"
+     ORDER BY l."openedAt" DESC`,
+  );
+  if (rows.length === 0) return [];
+
+  const marks = await getMarks(rows.map((r) => r.symbol as string));
+
   return rows.map((r) => {
-    const traderLevels = brackets.get(`${r.accountId}|${r.symbol}`) ?? { sl: null, tp: null };
+    const entry = num(r.entryPrice);
+    const qty = num(r.quantity);
+    const side = invert(r.side);
+    // Signal P&L is the opposite of the trader's, so the signal's own direction
+    // gives it directly: (mark − entry) × qty × signalDirection × multiplier.
+    const dir = side === "LONG" ? 1 : -1;
+    const mark = marks.get(r.symbol);
+    const unrealizedPnl =
+      mark != null && mark > 0
+        ? Math.round((mark - entry) * qty * dir * getMultiplier(r.symbol) * 100) / 100
+        : Math.round(-num(r.storedUnrealized) * 100) / 100; // upstream unreachable → stored mirror
+
     return {
-      id: `pos:${r.id}`,
+      id: `lot:${r.id}`,
       symbol: r.symbol,
       market: market(r.symbol),
-      side: invert(r.side),
-      entry: num(r.averagePrice),
-      // Inverted: the signal's stop is where the trader would take profit, and vice versa.
-      stopLoss: traderLevels.tp,
-      takeProfit: traderLevels.sl,
+      side,
+      entry,
+      // Inverted: the signal's stop sits where the trader takes profit, and vice versa.
+      stopLoss: r.traderTarget != null ? num(r.traderTarget) : null,
+      takeProfit: r.traderStop != null ? num(r.traderStop) : null,
       exit: null,
-      quantity: num(r.quantity),
-      conviction: num(r.riskPhase) || 1,
+      quantity: qty,
+      conviction: (r.phaseAtOpen != null ? num(r.phaseAtOpen) : num(r.riskPhase)) || 1,
       status: "active" as const,
       openedAt: new Date(r.openedAt).getTime(),
       closedAt: null,
       pnl: null,
-      // Signal open P&L is the opposite of the trader's unrealized P&L.
-      unrealizedPnl: Math.round(-num(r.unrealizedPnl) * 100) / 100,
+      unrealizedPnl,
       win: null,
     };
   });

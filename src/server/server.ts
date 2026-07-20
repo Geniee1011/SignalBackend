@@ -98,19 +98,31 @@ export function createSignalServer() {
     ws.send(JSON.stringify({ type: "signals", data: applyAccess(signals, access) }));
   };
   let lastHash = "";
+  let ticking = false;
   const broadcast = async () => {
-    if (wss.clients.size === 0) return;
+    if (wss.clients.size === 0 || ticking) return;
+    ticking = true; // a slow upstream mark must not let ticks pile up on each other
     try {
       const signals = await getSignals();
-      const hash = JSON.stringify(signals.map((s) => [s.id, s.status, s.exit, s.stopLoss, s.takeProfit]));
+      // P&L is part of the identity of a live signal: the admin Positions page marks
+      // open trades to market ~1s, and the mirror has to move with it. Leaving
+      // unrealizedPnl out of the hash meant an open signal's P&L froze until its
+      // bracket or status changed.
+      const hash = JSON.stringify(
+        signals.map((s) => [s.id, s.status, s.exit, s.stopLoss, s.takeProfit, s.unrealizedPnl, s.pnl]),
+      );
       if (hash === lastHash) return;
       lastHash = hash;
       for (const c of wss.clients) if (c.readyState === WebSocket.OPEN) await sendFiltered(c, signals);
     } catch (err) {
       console.warn("[ws] broadcast failed:", (err as Error).message);
+    } finally {
+      ticking = false;
     }
   };
-  const timer = setInterval(() => void broadcast(), 3000);
+  // ~1s to track the admin Positions page's own mark-to-market cadence. The hash
+  // check keeps an idle feed silent, and `ticking` guards against overlap.
+  const timer = setInterval(() => void broadcast(), 1000);
   wss.on("connection", (ws, req) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
     const payload = verifyToken(url.searchParams.get("token") ?? "");
