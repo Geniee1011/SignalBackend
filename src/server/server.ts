@@ -3,6 +3,10 @@ import { WebSocketServer, WebSocket } from "ws";
 import { config } from "../config.js";
 import { register, login, verifyToken, getUserById, type TokenPayload } from "../auth/service.js";
 import { getSignals, getSignalsRange, getMirrorSignals } from "../signals/source.js";
+import { getLink, connect as connectBroker, disconnect as disconnectBroker } from "../broker/links.js";
+import { brokerCryptoReady } from "../broker/crypto.js";
+import { getCopySettings, updateCopySettings, sanitizeCopySettings } from "../broker/copy-settings.js";
+import { collect, acknowledge, recentOrders } from "../broker/queue.js";
 import { getPerformance } from "../signals/performance.js";
 import {
   applyAccess,
@@ -216,6 +220,93 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const body = await readJson<{ access?: unknown; status?: string }>(req);
     if (body?.access !== undefined) await updateUserAccess(id, sanitizeAccess(body.access));
     if (body?.status === "ACTIVE" || body?.status === "SUSPENDED") await setUserStatus(id, body.status);
+    return json(res, 200, { ok: true });
+  }
+
+  // --- broker link (Tradovate), one account per subscriber ---
+  if (path === "/api/broker" && req.method === "GET") {
+    const payload = requireUser(req);
+    if (!payload) return json(res, 401, { error: "unauthorized" });
+    return json(res, 200, await getLink(payload.sub));
+  }
+  if (path === "/api/broker/connect" && req.method === "POST") {
+    const payload = requireUser(req);
+    if (!payload) return json(res, 401, { error: "unauthorized" });
+    // Without an encryption key we would have to store the password in plaintext.
+    // Refuse instead — a broker password is not something to "temporarily" expose.
+    if (!brokerCryptoReady()) return json(res, 503, { error: "Broker connections are disabled: BROKER_ENC_KEY is not configured." });
+    const body = await readJson<{ username?: string; password?: string; cid?: string; sec?: string; env?: string }>(req);
+    const username = body?.username?.trim() ?? "";
+    const password = body?.password ?? "";
+    const cid = body?.cid?.trim() ?? "";
+    const sec = body?.sec?.trim() ?? "";
+    if (!username || !password || !cid || !sec) {
+      return json(res, 400, { error: "username, password, cid and sec are all required" });
+    }
+    // Anything other than an explicit "live" is treated as demo.
+    const env = body?.env === "live" ? "live" : "demo";
+    try {
+      return json(res, 200, await connectBroker(payload.sub, { username, password, cid, sec, env }));
+    } catch (err) {
+      // Surface Tradovate's own wording (bad credentials, rate limit) — a generic
+      // failure here is impossible for the user to act on.
+      return json(res, 400, { error: (err as Error).message });
+    }
+  }
+  if (path === "/api/broker/disconnect" && req.method === "POST") {
+    const payload = requireUser(req);
+    if (!payload) return json(res, 401, { error: "unauthorized" });
+    await disconnectBroker(payload.sub);
+    return json(res, 200, { ok: true });
+  }
+
+  // --- auto-copy settings ---
+  if (path === "/api/copy/settings" && req.method === "GET") {
+    const payload = requireUser(req);
+    if (!payload) return json(res, 401, { error: "unauthorized" });
+    return json(res, 200, await getCopySettings(payload.sub));
+  }
+  if (path === "/api/copy/settings" && (req.method === "PUT" || req.method === "POST")) {
+    const payload = requireUser(req);
+    if (!payload) return json(res, 401, { error: "unauthorized" });
+    const body = await readJson<unknown>(req);
+    const clean = sanitizeCopySettings(body);
+    // Turning copying ON is meaningless while the server-wide switch is off —
+    // say so rather than letting the user believe trades will be placed.
+    if (clean.mode !== "off" && !config.copyExecutionEnabled) {
+      return json(res, 503, { error: "Automated copying is disabled on this server (COPY_EXECUTION is not set)." });
+    }
+    await updateCopySettings(payload.sub, clean);
+    return json(res, 200, clean);
+  }
+  if (path === "/api/copy/orders" && req.method === "GET") {
+    const payload = requireUser(req);
+    if (!payload) return json(res, 401, { error: "unauthorized" });
+    return json(res, 200, await recentOrders(payload.sub));
+  }
+
+  // --- pull queue: called by the subscriber's own terminal strategy ---
+  // COLLECT is destructive (it claims the orders), so it is POST, not GET — a
+  // retried GET or an over-eager HTTP cache must never consume the queue.
+  if (path === "/api/copy/collect" && req.method === "POST") {
+    const payload = requireUser(req);
+    if (!payload) return json(res, 401, { error: "unauthorized" });
+    return json(res, 200, { orders: await collect(payload.sub) });
+  }
+  if (path.startsWith("/api/copy/ack/") && req.method === "POST") {
+    const payload = requireUser(req);
+    if (!payload) return json(res, 401, { error: "unauthorized" });
+    const id = decodeURIComponent(path.slice("/api/copy/ack/".length).split("/")[0] ?? "");
+    if (!id) return json(res, 400, { error: "missing order id" });
+    const body = await readJson<{ ok?: boolean; brokerOrderId?: string; error?: string }>(req);
+    const done = await acknowledge(payload.sub, id, {
+      ok: body?.ok === true,
+      brokerOrderId: body?.brokerOrderId ?? null,
+      error: body?.error,
+    });
+    // 409, not 404: the id may well exist but isn't in a state we can accept an
+    // ack for (never collected, or already acknowledged).
+    if (!done) return json(res, 409, { error: "order is not awaiting acknowledgement" });
     return json(res, 200, { ok: true });
   }
 

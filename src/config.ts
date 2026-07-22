@@ -23,6 +23,16 @@ export const config = {
 
   /** Rolling window (hours) of closed signals shown on the Signals page. */
   signalWindowHours: num("SIGNAL_WINDOW_HOURS", 24),
+
+  /** AES key for broker credentials at rest. Unset = subscribers cannot connect a broker. */
+  brokerEncKey: process.env.BROKER_ENC_KEY?.trim() ?? "",
+  /**
+   * Master switch for placing real orders. OFF unless explicitly enabled, so a
+   * deploy can never start trading a subscriber's account by accident (a bad
+   * config, a restored backup, a copied .env). Per-user `copyEnabled` is required
+   * on top of this.
+   */
+  copyExecutionEnabled: process.env.COPY_EXECUTION === "1",
 } as const;
 
 if (config.jwt.secret === "dev-insecure-signal-secret-change-me") {

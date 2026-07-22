@@ -35,3 +35,79 @@ ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessDailyLimit"    integ
 ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessMinConviction" integer NOT NULL DEFAULT 1;
 ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessLive"          boolean NOT NULL DEFAULT true;
 ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessSuspended"     boolean NOT NULL DEFAULT false;
+
+-- ---------------------------------------------------------------------------
+-- Broker integration (Tradovate). Phase 1 is strictly ONE-TO-ONE: a subscriber
+-- links exactly one brokerage account, enforced by the UNIQUE constraint on
+-- "userId". Expanding to one-user-many-accounts later means dropping that
+-- constraint and adding a "primary" flag — every other column already allows it.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS "signal"."BrokerLink" (
+  "id"            text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  "userId"        text NOT NULL UNIQUE REFERENCES "signal"."User"("id") ON DELETE CASCADE,
+  "broker"        text NOT NULL DEFAULT 'tradovate',
+  -- 'demo' | 'live'. Defaults to demo: connecting to a live account must be a
+  -- deliberate act, never something a default lands you in.
+  "env"           text NOT NULL DEFAULT 'demo',
+  -- AES-256-GCM blobs (BROKER_ENC_KEY). The password and API secret are NEVER
+  -- stored or logged in plaintext and are never returned over the API.
+  "usernameEnc"   text NOT NULL,
+  "passwordEnc"   text NOT NULL,
+  "cidEnc"        text NOT NULL,
+  "secEnc"        text NOT NULL,
+  -- Resolved after a successful login; identifies which account orders go to.
+  "accountId"     integer,
+  "accountSpec"   text,
+  "accountName"   text,
+  "status"        text NOT NULL DEFAULT 'PENDING',  -- 'PENDING' | 'CONNECTED' | 'ERROR'
+  "lastError"     text,
+  "lastCheckedAt" timestamptz,
+  "createdAt"     timestamptz NOT NULL DEFAULT now(),
+  "updatedAt"     timestamptz NOT NULL DEFAULT now()
+);
+
+-- Auto-copy settings. Separate from BrokerLink so a user can keep their broker
+-- connected while automation is switched off — disconnecting to pause trading
+-- would force them to re-enter credentials.
+ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "copyEnabled"       boolean NOT NULL DEFAULT false;
+ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "copyMinConviction" integer NOT NULL DEFAULT 1;
+ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "copyMarkets"       text[]  NOT NULL DEFAULT '{}';
+ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "copyQuantity"      integer NOT NULL DEFAULT 1;
+ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "copyMaxConcurrent" integer NOT NULL DEFAULT 3;
+ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "copyMaxPerDay"     integer NOT NULL DEFAULT 10;
+
+-- Every copy attempt, successful or not. This table is what makes automation
+-- SAFE to re-run: the UNIQUE (userId, signalId) pair means a signal can only ever
+-- be placed once per user, so a restart, a duplicate broadcast or an overlapping
+-- engine tick can never double-fill a live account.
+CREATE TABLE IF NOT EXISTS "signal"."CopyOrder" (
+  "id"            text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  "userId"        text NOT NULL REFERENCES "signal"."User"("id") ON DELETE CASCADE,
+  "signalId"      text NOT NULL,
+  "symbol"        text NOT NULL,
+  "contract"      text,
+  "side"          text NOT NULL,             -- signal side: 'LONG' | 'SHORT'
+  "quantity"      integer NOT NULL,
+  "status"        text NOT NULL,             -- 'PLACED' | 'REJECTED' | 'SKIPPED'
+  "brokerOrderId" text,
+  "reason"        text,                      -- rejection cause / skip reason
+  "createdAt"     timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT "CopyOrder_user_signal_key" UNIQUE ("userId", "signalId")
+);
+CREATE INDEX IF NOT EXISTS "signal_CopyOrder_user_idx" ON "signal"."CopyOrder" ("userId", "createdAt" DESC);
+
+-- Three-way copy mode, superseding the boolean "copyEnabled" (kept in sync for
+-- any older reader). 'confirm' prepares an order but waits for the user to
+-- approve it — required wherever automation is only permitted with active human
+-- oversight.
+ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "copyMode" text NOT NULL DEFAULT 'off';
+
+-- CopyOrder gains the queue/confirm lifecycle:
+--   PENDING_CONFIRM -> user must approve  |  QUEUED -> awaiting their terminal
+--   PLACED / REJECTED / SKIPPED           -> terminal states
+ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "adapter"     text;
+ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "stopLoss"    numeric(18,6);
+ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "takeProfit"  numeric(18,6);
+ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "conviction"  integer;
+ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "claimedAt"   timestamptz;
+ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "updatedAt"   timestamptz NOT NULL DEFAULT now();
