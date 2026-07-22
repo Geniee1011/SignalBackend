@@ -29,6 +29,11 @@ export interface QueuedOrder {
   quantity: number;
   stopLoss: number | null;
   takeProfit: number | null;
+  /**
+   * Entry limit price. The terminal works the entry AT this price instead of
+   * paying the market. null = price unknown; fall back to a market entry.
+   */
+  limitPrice: number | null;
   conviction: number | null;
   createdAt: number;
 }
@@ -79,7 +84,7 @@ export async function collect(userId: string, maxAgeMs = DEFAULT_MAX_AGE_MS): Pr
        ORDER BY "createdAt"
        FOR UPDATE SKIP LOCKED
      )
-     RETURNING "id","signalId","kind","symbol","side","quantity","stopLoss","takeProfit","conviction","createdAt"`,
+     RETURNING "id","signalId","kind","symbol","side","quantity","stopLoss","takeProfit","limitPrice","conviction","createdAt"`,
     [userId],
   );
 
@@ -92,6 +97,7 @@ export async function collect(userId: string, maxAgeMs = DEFAULT_MAX_AGE_MS): Pr
     quantity: Number(r.quantity),
     stopLoss: num(r.stopLoss),
     takeProfit: num(r.takeProfit),
+    limitPrice: num(r.limitPrice),
     conviction: num(r.conviction),
     createdAt: new Date(r.createdAt as string).getTime(),
   }));
@@ -105,13 +111,18 @@ export async function collect(userId: string, maxAgeMs = DEFAULT_MAX_AGE_MS): Pr
 export async function acknowledge(
   userId: string,
   orderId: string,
-  outcome: { ok: boolean; brokerOrderId?: string | null; error?: string; skipped?: boolean },
+  outcome: { ok: boolean; brokerOrderId?: string | null; error?: string; skipped?: boolean; dryRun?: boolean },
 ): Promise<boolean> {
-  // `skipped` = the terminal deliberately didn't place it (log-only mode, or
-  // already flat for a CLOSE). Recording that as REJECTED would put it next to
-  // genuine broker refusals — and "my orders keep getting rejected" is a very
-  // different alarm from "log-only mode is still on".
-  const status = outcome.ok ? "PLACED" : outcome.skipped ? "SKIPPED" : "REJECTED";
+  /* Three distinct "didn't place it" outcomes — they are NOT interchangeable:
+   *
+   *   dryRun  — log-only mode. A position WOULD exist, so this entry must still
+   *             produce a CLOSE later, otherwise a dry run can never exercise the
+   *             exit path and close bugs surface first on real money.
+   *   skipped — deliberately not acted on (already flat, filter, limit). Nothing
+   *             exists, so nothing to close.
+   *   rejected— the broker refused it. Also nothing to close, but it IS a fault
+   *             and must stay visible as one. */
+  const status = outcome.ok ? "PLACED" : outcome.dryRun ? "DRY_RUN" : outcome.skipped ? "SKIPPED" : "REJECTED";
   const { rowCount } = await getPool().query(
     `UPDATE "signal"."CopyOrder"
      SET "status" = $3, "brokerOrderId" = $4, "reason" = $5, "updatedAt" = now()
@@ -152,7 +163,7 @@ export async function reapAbandoned(staleMs = 60_000): Promise<number> {
 export async function recentOrders(userId: string, limit = 50): Promise<Record<string, unknown>[]> {
   const { rows } = await getPool().query(
     `SELECT "id","signalId","symbol","side","quantity","status","reason","brokerOrderId",
-            "stopLoss","takeProfit","conviction","createdAt","updatedAt"
+            "stopLoss","takeProfit","limitPrice","conviction","createdAt","updatedAt"
      FROM "signal"."CopyOrder"
      WHERE "userId" = $1
      ORDER BY "createdAt" DESC
@@ -164,6 +175,7 @@ export async function recentOrders(userId: string, limit = 50): Promise<Record<s
     quantity: Number(r.quantity),
     stopLoss: num(r.stopLoss),
     takeProfit: num(r.takeProfit),
+    limitPrice: num(r.limitPrice),
     conviction: num(r.conviction),
     createdAt: new Date(r.createdAt as string).getTime(),
     updatedAt: new Date(r.updatedAt as string).getTime(),

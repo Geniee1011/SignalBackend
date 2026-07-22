@@ -298,12 +298,13 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!payload) return json(res, 401, { error: "unauthorized" });
     const id = decodeURIComponent(path.slice("/api/copy/ack/".length).split("/")[0] ?? "");
     if (!id) return json(res, 400, { error: "missing order id" });
-    const body = await readJson<{ ok?: boolean; brokerOrderId?: string; error?: string; skipped?: boolean }>(req);
+    const body = await readJson<{ ok?: boolean; brokerOrderId?: string; error?: string; skipped?: boolean; dryRun?: boolean }>(req);
     const done = await acknowledge(payload.sub, id, {
       ok: body?.ok === true,
       brokerOrderId: body?.brokerOrderId ?? null,
       error: body?.error,
       skipped: body?.skipped === true,
+      dryRun: body?.dryRun === true,
     });
     // 409, not 404: the id may well exist but isn't in a state we can accept an
     // ack for (never collected, or already acknowledged).

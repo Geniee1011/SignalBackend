@@ -91,13 +91,17 @@ async function claim(intent: OrderIntent, adapter: string): Promise<string | nul
   const { rows } = await getPool().query(
     `INSERT INTO "signal"."CopyOrder"
        ("userId","signalId","kind","symbol","side","quantity","status","adapter",
-        "stopLoss","takeProfit","conviction","createdAt","updatedAt")
-     VALUES ($1,$2,'ENTRY',$3,$4,$5,'PENDING_CONFIRM',$6,$7,$8,$9,now(),now())
+        "stopLoss","takeProfit","limitPrice","conviction","createdAt","updatedAt")
+     VALUES ($1,$2,'ENTRY',$3,$4,$5,'PENDING_CONFIRM',$6,$7,$8,$9,$10,now(),now())
      ON CONFLICT ("userId","signalId","kind") DO NOTHING
      RETURNING "id"`,
     [
       intent.userId, intent.signalId, intent.symbol, intent.side, intent.quantity,
-      adapter, intent.stopLoss, intent.takeProfit, intent.conviction,
+      adapter, intent.stopLoss, intent.takeProfit,
+      // 0/NaN would be a nonsense limit — send null so the terminal falls back to
+      // a market entry rather than resting an order at a price that can never fill.
+      intent.referencePrice > 0 ? intent.referencePrice : null,
+      intent.conviction,
     ],
   );
   return (rows[0]?.id as string | undefined) ?? null;
@@ -115,6 +119,19 @@ async function claim(intent: OrderIntent, adapter: string): Promise<string | nul
  * Only entries we actually placed or queued are closed. Rejected, skipped and
  * expired ones never reached a broker, so there is nothing to flatten.
  *
+ * A CLOSE means "this signal is over", NOT "you are holding something". Since
+ * entries are worked as LIMIT orders, three states are possible by the time the
+ * signal ends, and the terminal resolves whichever applies:
+ *
+ *   filled          -> flatten the position
+ *   never filled    -> CANCEL the still-resting entry, so it cannot fill into a
+ *                      trade that has already finished
+ *   partially filled-> cancel the remainder AND flatten what did fill
+ *
+ * Keeping that decision in the terminal is deliberate: only it knows the fill
+ * state. Splitting this into separate CLOSE and CANCEL instructions here would
+ * mean guessing that state from a distance and racing the broker.
+ *
  * Idempotency comes from UNIQUE(userId, signalId, kind): exactly one CLOSE per
  * entry can ever exist, however many ticks race here.
  */
@@ -123,7 +140,11 @@ export async function queueCloses(openSignalIds: Set<string>, adapter: string): 
     `SELECT "id","userId","signalId","symbol","side","quantity","conviction"
      FROM "signal"."CopyOrder" e
      WHERE e."kind" = 'ENTRY'
-       AND e."status" IN ('PLACED','QUEUED')
+       -- PLACED/QUEUED = a real position exists.
+       -- DRY_RUN = log-only mode, where a position WOULD exist — included so a dry
+       -- run exercises the FULL lifecycle. Excluding it meant close bugs could only
+       -- ever be discovered live.
+       AND e."status" IN ('PLACED','QUEUED','DRY_RUN')
        AND NOT EXISTS (
          SELECT 1 FROM "signal"."CopyOrder" c
          WHERE c."userId" = e."userId" AND c."signalId" = e."signalId" AND c."kind" = 'CLOSE'

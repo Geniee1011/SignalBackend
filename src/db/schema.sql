@@ -112,6 +112,13 @@ ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "conviction"  integer;
 ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "claimedAt"   timestamptz;
 ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "updatedAt"   timestamptz NOT NULL DEFAULT now();
 
+-- The signal's entry price, carried through so the terminal can work the entry as
+-- a LIMIT order at the price the signal was published at, rather than paying
+-- whatever the market offers. A market entry fills at any price, which in a fast
+-- market is exactly where a copied result stops resembling the advertised one.
+-- NULL = no price known; the terminal falls back to a market entry.
+ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "limitPrice"  numeric(18,6);
+
 -- Copy orders are now either an ENTRY or a CLOSE (mirroring the trader exiting).
 -- 'kind' defaults to ENTRY so every existing row keeps its meaning.
 ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "kind" text NOT NULL DEFAULT 'ENTRY';
@@ -123,3 +130,12 @@ ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "kind" text NOT NULL D
 ALTER TABLE "signal"."CopyOrder" DROP CONSTRAINT IF EXISTS "CopyOrder_user_signal_key";
 CREATE UNIQUE INDEX IF NOT EXISTS "CopyOrder_user_signal_kind_key"
   ON "signal"."CopyOrder" ("userId", "signalId", "kind");
+
+-- DRY_RUN: the terminal deliberately did not place this because it is in
+-- log-only mode. Distinct from SKIPPED (a filter/limit stopped it) and REJECTED
+-- (the broker refused it), because a DRY_RUN entry represents a position that
+-- WOULD exist — so it must still generate a CLOSE. Without this, log-only mode
+-- could exercise entries but never exits, and close bugs would only surface
+-- once real money was on the line.
+COMMENT ON COLUMN "signal"."CopyOrder"."status" IS
+  'PENDING_CONFIRM | QUEUED | PLACED | DRY_RUN | REJECTED | SKIPPED | EXPIRED | ABANDONED';

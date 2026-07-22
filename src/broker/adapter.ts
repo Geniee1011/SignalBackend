@@ -30,7 +30,14 @@ export interface OrderIntent {
   /** Protective levels, already swapped for the counter-side. May be absent. */
   stopLoss: number | null;
   takeProfit: number | null;
-  /** Reference entry from the signal — informational; entries are market orders. */
+  /**
+   * The signal's entry price — worked as a LIMIT price, not just informational.
+   *
+   * A market entry fills at whatever the book offers, which in a fast market is
+   * where a copied result stops resembling the published one. The trade-off is
+   * that a limit may never fill, so "we never got in" becomes a real state the
+   * rest of the system has to handle (see queueCloses).
+   */
   referencePrice: number;
   conviction: number;
 }

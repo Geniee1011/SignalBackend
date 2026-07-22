@@ -141,6 +141,32 @@ async function main(): Promise<void> {
             `got ${got.length}`);
     }
 
+    // --- LOG-ONLY must rehearse the FULL lifecycle ---------------------------
+    // Regression: closes originally required PLACED/QUEUED, so a dry-run entry
+    // never produced a close. That made log-only mode able to test entries but
+    // never exits — the exact bug you'd want a dry run to catch.
+    {
+      await clear();
+      await processUser(userId, settings(), [signal("lot:dry-1")], adapter);
+      const [q] = await collect(userId);
+      await acknowledge(userId, q!.id, { ok: false, dryRun: true, error: "log-only mode" });
+      const entry = (await ordersFor("ENTRY"))[0];
+      check("log-only ack records DRY_RUN", entry?.status === "DRY_RUN", entry?.status);
+
+      await sweepCloses([]);
+      check("a DRY_RUN entry still produces a CLOSE", (await ordersFor("CLOSE")).length === 1);
+    }
+
+    // A genuine skip (filter/limit/already-flat) must still NOT be closed.
+    {
+      await clear();
+      await processUser(userId, settings(), [signal("lot:skip-2")], adapter);
+      const [q] = await collect(userId);
+      await acknowledge(userId, q!.id, { ok: false, skipped: true, error: "already flat" });
+      await sweepCloses([]);
+      check("a genuinely SKIPPED entry is still never closed", (await ordersFor("CLOSE")).length === 0);
+    }
+
     // --- skipped ack is distinct from rejected ------------------------------
     {
       await clear();
