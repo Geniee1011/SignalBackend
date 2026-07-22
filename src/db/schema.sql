@@ -111,3 +111,15 @@ ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "takeProfit"  numeric(
 ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "conviction"  integer;
 ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "claimedAt"   timestamptz;
 ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "updatedAt"   timestamptz NOT NULL DEFAULT now();
+
+-- Copy orders are now either an ENTRY or a CLOSE (mirroring the trader exiting).
+-- 'kind' defaults to ENTRY so every existing row keeps its meaning.
+ALTER TABLE "signal"."CopyOrder" ADD COLUMN IF NOT EXISTS "kind" text NOT NULL DEFAULT 'ENTRY';
+
+-- The UNIQUE(userId, signalId) guard stops a signal being ENTERED twice — but a
+-- CLOSE for that same signal must still be allowed through. Widening the key to
+-- include 'kind' permits exactly one entry AND one close per signal, per user,
+-- and nothing more.
+ALTER TABLE "signal"."CopyOrder" DROP CONSTRAINT IF EXISTS "CopyOrder_user_signal_key";
+CREATE UNIQUE INDEX IF NOT EXISTS "CopyOrder_user_signal_kind_key"
+  ON "signal"."CopyOrder" ("userId", "signalId", "kind");

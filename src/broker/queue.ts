@@ -16,6 +16,14 @@ import { getPool } from "../db/pool.js";
 export interface QueuedOrder {
   id: string;
   signalId: string;
+  /**
+   * ENTRY — open a new position.
+   * CLOSE — FLATTEN the position from the matching ENTRY. `side` repeats the
+   * entry's side so the terminal knows what to flatten; it must never be traded
+   * as a fresh order in the opposite direction, which on an already-flat account
+   * would open a reversed position instead of closing anything.
+   */
+  kind: "ENTRY" | "CLOSE";
   symbol: string;
   side: "LONG" | "SHORT";
   quantity: number;
@@ -44,13 +52,20 @@ const num = (v: unknown): number | null => {
 export async function collect(userId: string, maxAgeMs = DEFAULT_MAX_AGE_MS): Promise<QueuedOrder[]> {
   const pool = getPool();
 
-  // Retire stale work first, so it can never be part of the claim below.
+  // Retire stale ENTRIES first, so they can never be part of the claim below.
+  //
+  // CLOSES are deliberately exempt. The staleness rule exists because a late
+  // ENTRY buys into a market that has moved on — but a late CLOSE is the exact
+  // opposite: the subscriber is still holding a position the trader has already
+  // exited, and expiring it would strand them in it indefinitely. Late is far
+  // better than never for an exit.
   await pool.query(
     `UPDATE "signal"."CopyOrder"
      SET "status" = 'EXPIRED',
          "reason" = 'not collected in time — terminal offline',
          "updatedAt" = now()
      WHERE "userId" = $1 AND "status" = 'QUEUED' AND "claimedAt" IS NULL
+       AND "kind" <> 'CLOSE'
        AND "createdAt" < now() - ($2 || ' milliseconds')::interval`,
     [userId, String(maxAgeMs)],
   );
@@ -64,13 +79,14 @@ export async function collect(userId: string, maxAgeMs = DEFAULT_MAX_AGE_MS): Pr
        ORDER BY "createdAt"
        FOR UPDATE SKIP LOCKED
      )
-     RETURNING "id","signalId","symbol","side","quantity","stopLoss","takeProfit","conviction","createdAt"`,
+     RETURNING "id","signalId","kind","symbol","side","quantity","stopLoss","takeProfit","conviction","createdAt"`,
     [userId],
   );
 
   return rows.map((r) => ({
     id: r.id as string,
     signalId: r.signalId as string,
+    kind: (r.kind === "CLOSE" ? "CLOSE" : "ENTRY") as "ENTRY" | "CLOSE",
     symbol: r.symbol as string,
     side: r.side as "LONG" | "SHORT",
     quantity: Number(r.quantity),
@@ -89,8 +105,13 @@ export async function collect(userId: string, maxAgeMs = DEFAULT_MAX_AGE_MS): Pr
 export async function acknowledge(
   userId: string,
   orderId: string,
-  outcome: { ok: boolean; brokerOrderId?: string | null; error?: string },
+  outcome: { ok: boolean; brokerOrderId?: string | null; error?: string; skipped?: boolean },
 ): Promise<boolean> {
+  // `skipped` = the terminal deliberately didn't place it (log-only mode, or
+  // already flat for a CLOSE). Recording that as REJECTED would put it next to
+  // genuine broker refusals — and "my orders keep getting rejected" is a very
+  // different alarm from "log-only mode is still on".
+  const status = outcome.ok ? "PLACED" : outcome.skipped ? "SKIPPED" : "REJECTED";
   const { rowCount } = await getPool().query(
     `UPDATE "signal"."CopyOrder"
      SET "status" = $3, "brokerOrderId" = $4, "reason" = $5, "updatedAt" = now()
@@ -98,7 +119,7 @@ export async function acknowledge(
     [
       orderId,
       userId,
-      outcome.ok ? "PLACED" : "REJECTED",
+      status,
       outcome.brokerOrderId ?? null,
       outcome.ok ? null : (outcome.error ?? "terminal reported failure").slice(0, 500),
     ],

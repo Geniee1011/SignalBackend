@@ -90,10 +90,10 @@ async function usageFor(userId: string): Promise<Usage> {
 async function claim(intent: OrderIntent, adapter: string): Promise<string | null> {
   const { rows } = await getPool().query(
     `INSERT INTO "signal"."CopyOrder"
-       ("userId","signalId","symbol","side","quantity","status","adapter",
+       ("userId","signalId","kind","symbol","side","quantity","status","adapter",
         "stopLoss","takeProfit","conviction","createdAt","updatedAt")
-     VALUES ($1,$2,$3,$4,$5,'PENDING_CONFIRM',$6,$7,$8,$9,now(),now())
-     ON CONFLICT ("userId","signalId") DO NOTHING
+     VALUES ($1,$2,'ENTRY',$3,$4,$5,'PENDING_CONFIRM',$6,$7,$8,$9,now(),now())
+     ON CONFLICT ("userId","signalId","kind") DO NOTHING
      RETURNING "id"`,
     [
       intent.userId, intent.signalId, intent.symbol, intent.side, intent.quantity,
@@ -101,6 +101,54 @@ async function claim(intent: OrderIntent, adapter: string): Promise<string | nul
     ],
   );
   return (rows[0]?.id as string | undefined) ?? null;
+}
+
+/**
+ * Queue CLOSE orders for entries whose upstream signal is no longer open.
+ *
+ * Without this, copying only mirrors ENTRIES: when the trader exits, a subscriber
+ * is left holding a position the signal provider has already abandoned. Their
+ * stop/target would eventually take them out, but at a price the signal never
+ * intended — and for a counter-signal product the whole thesis ends when the
+ * trader is flat.
+ *
+ * Only entries we actually placed or queued are closed. Rejected, skipped and
+ * expired ones never reached a broker, so there is nothing to flatten.
+ *
+ * Idempotency comes from UNIQUE(userId, signalId, kind): exactly one CLOSE per
+ * entry can ever exist, however many ticks race here.
+ */
+export async function queueCloses(openSignalIds: Set<string>, adapter: string): Promise<CopyDecision[]> {
+  const { rows } = await getPool().query(
+    `SELECT "id","userId","signalId","symbol","side","quantity","conviction"
+     FROM "signal"."CopyOrder" e
+     WHERE e."kind" = 'ENTRY'
+       AND e."status" IN ('PLACED','QUEUED')
+       AND NOT EXISTS (
+         SELECT 1 FROM "signal"."CopyOrder" c
+         WHERE c."userId" = e."userId" AND c."signalId" = e."signalId" AND c."kind" = 'CLOSE'
+       )`,
+  );
+
+  const out: CopyDecision[] = [];
+  for (const r of rows) {
+    const signalId = r.signalId as string;
+    if (openSignalIds.has(signalId)) continue; // still open upstream — leave it be
+
+    // The CLOSE carries the ENTRY's own side. The terminal FLATTENS that position;
+    // it must never send an opposite order blindly, which on an already-flat
+    // account would open a brand-new reversed position.
+    const { rows: ins } = await getPool().query(
+      `INSERT INTO "signal"."CopyOrder"
+         ("userId","signalId","kind","symbol","side","quantity","status","adapter","conviction","createdAt","updatedAt")
+       VALUES ($1,$2,'CLOSE',$3,$4,$5,'QUEUED',$6,$7,now(),now())
+       ON CONFLICT ("userId","signalId","kind") DO NOTHING
+       RETURNING "id"`,
+      [r.userId, signalId, r.symbol, r.side, Number(r.quantity), adapter, r.conviction],
+    );
+    if (ins[0]) out.push({ userId: r.userId as string, signalId, status: "QUEUED", reason: "close mirrored" });
+  }
+  return out;
 }
 
 async function finalize(
@@ -213,14 +261,25 @@ export async function processUser(
 export async function runOnce(adapter: BrokerAdapter): Promise<CopyDecision[]> {
   if (!config.copyExecutionEnabled) return [];
   const [users, signals] = await Promise.all([listCopyUsers(), getActiveSignals()]);
-  if (users.length === 0 || signals.length === 0) return [];
 
   // Demo signals must never reach a broker. They're synthesized for design work
   // and would place real orders against prices that were never quoted.
   const real = signals.filter((s) => !s.id.startsWith("demo-"));
-  if (real.length === 0) return [];
-
   const out: CopyDecision[] = [];
+
+  // CLOSES FIRST, and unconditionally — this must run even when there are no open
+  // signals and no copy-enabled users left, because "no open signals" is exactly
+  // the state in which everything previously entered needs closing. Returning
+  // early on an empty list (as this did) is what would strand a subscriber in a
+  // position after the trader went flat.
+  try {
+    out.push(...(await queueCloses(new Set(real.map((s) => s.id)), adapter.name)));
+  } catch (err) {
+    console.warn("[copy] close sweep failed:", (err as Error).message);
+  }
+
+  if (users.length === 0 || real.length === 0) return out;
+
   for (const { userId, settings } of users) {
     try {
       out.push(...(await processUser(userId, settings, real, adapter)));
