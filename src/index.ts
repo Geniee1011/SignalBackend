@@ -2,6 +2,9 @@ import { config, useDatabase } from "./config.js";
 import { createSignalServer } from "./server/server.js";
 import { ensureAdmin } from "./auth/service.js";
 import { applySchema } from "./db/apply-schema.js";
+import { startCopyEngine, stopCopyEngine } from "./broker/copy-engine.js";
+import { PullAdapter } from "./broker/adapters/pull.js";
+import { reapAbandoned } from "./broker/queue.js";
 
 if (!useDatabase) {
   console.error("[fatal] DATABASE_URL is not set — the signal app needs the shared trading database to read trades from.");
@@ -36,16 +39,39 @@ server.on("error", (err: NodeJS.ErrnoException) => {
   process.exit(1);
 });
 
+/* Auto-copy engine.
+ *
+ * PULL mode: we only QUEUE orders — the subscriber's own terminal (the ATAS
+ * strategy) collects them and places them through its broker. Nothing here ever
+ * contacts a broker or holds credentials.
+ *
+ * startCopyEngine is a no-op unless COPY_EXECUTION=1, so this is safe to call
+ * unconditionally: a deploy can never begin queueing trades by accident. */
+const copyAdapter = new PullAdapter("atas");
+startCopyEngine(copyAdapter);
+
+// Release orders a terminal collected but never confirmed (it crashed mid-place).
+// They are marked ABANDONED for a human to check, never silently re-sent — we
+// cannot know whether the broker already received them.
+const reaper = setInterval(() => {
+  void reapAbandoned().then((n) => {
+    if (n > 0) console.warn(`[copy] ${n} order(s) collected but never confirmed — marked ABANDONED`);
+  }).catch(() => {});
+}, 60_000);
+
 server.listen(config.port, () => {
   console.log(`SignalBackend listening on http://localhost:${config.port}`);
   console.log(`  WebSocket   ws://localhost:${config.port}/ws`);
   console.log(`  Signals     GET http://localhost:${config.port}/api/signals`);
   console.log(`  Performance GET http://localhost:${config.port}/api/performance`);
   console.log(`  Auth        POST /api/auth/register · POST /api/auth/login · GET /api/auth/me`);
+  console.log(`  Copy queue  POST /api/copy/collect · POST /api/copy/ack/:id`);
 });
 
 function shutdown() {
   console.log("\nShutting down…");
+  stopCopyEngine();
+  clearInterval(reaper);
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();
 }
