@@ -67,11 +67,29 @@ interface Usage {
  */
 async function usageFor(userId: string): Promise<Usage> {
   const { rows } = await getPool().query(
+    // Both metrics count ENTRIES, not CLOSES. A CLOSE is the exit of a copied
+    // signal, not a new one, so it must not consume the daily budget — and it is
+    // certainly not an open position.
+    //
+    // `open` = concurrent OPEN positions. An entry stops being open the moment a
+    // CLOSE exists for it (the signal ended and we're flattening), so those are
+    // excluded. Without this the count only ever rises — every placed entry stays
+    // PLACED forever — and an account permanently jams once it hits maxConcurrent.
     `SELECT
-       count(*) FILTER (WHERE "createdAt" >= now() - interval '24 hours'
-                          AND "status" <> 'SKIPPED')                       AS today,
-       count(*) FILTER (WHERE "status" IN ('PLACED','QUEUED','PENDING_CONFIRM')) AS open
-     FROM "signal"."CopyOrder" WHERE "userId" = $1`,
+       count(*) FILTER (
+         WHERE e."kind" = 'ENTRY'
+           AND e."createdAt" >= now() - interval '24 hours'
+           AND e."status" <> 'SKIPPED'
+       ) AS today,
+       count(*) FILTER (
+         WHERE e."kind" = 'ENTRY'
+           AND e."status" IN ('PLACED','QUEUED','PENDING_CONFIRM')
+           AND NOT EXISTS (
+             SELECT 1 FROM "signal"."CopyOrder" c
+             WHERE c."userId" = e."userId" AND c."signalId" = e."signalId" AND c."kind" = 'CLOSE'
+           )
+       ) AS open
+     FROM "signal"."CopyOrder" e WHERE e."userId" = $1`,
     [userId],
   );
   return { today: Number(rows[0]?.today ?? 0), open: Number(rows[0]?.open ?? 0) };

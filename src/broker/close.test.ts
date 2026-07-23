@@ -93,6 +93,48 @@ async function main(): Promise<void> {
       check("closes only the signal that ended", closes.length === 1, `got ${closes.length}`);
     }
 
+    // --- a closed position frees a concurrent slot -------------------------
+    // Regression: `open` counted every placed entry forever, so once an account
+    // reached maxConcurrent it jammed permanently — new signals were skipped even
+    // after their positions had long since closed. An entry with a CLOSE must stop
+    // occupying a slot.
+    {
+      await clear();
+      const cap = settings({ maxConcurrent: 2 });
+      await processUser(userId, cap, [signal("lot:cap-a"), signal("lot:cap-b")], adapter);
+      check("two entries fill the cap of 2", (await ordersFor("ENTRY")).length === 2);
+
+      const atCap = await processUser(userId, cap, [signal("lot:cap-c")], adapter);
+      check("a third signal is refused at the cap",
+        atCap.find((d) => d.signalId === "lot:cap-c")?.status === "SKIPPED",
+        atCap.find((d) => d.signalId === "lot:cap-c")?.reason);
+
+      // cap-a's position ends (it leaves the open set); cap-b stays open.
+      await sweepCloses(["lot:cap-b"]);
+      check("close queued for the ended position", (await ordersFor("CLOSE")).length === 1);
+
+      const freed = await processUser(userId, cap, [signal("lot:cap-c")], adapter);
+      check("the freed slot now admits the third signal",
+        freed.find((d) => d.signalId === "lot:cap-c")?.status === "QUEUED",
+        freed.find((d) => d.signalId === "lot:cap-c")?.status);
+    }
+
+    // --- a CLOSE does not eat into the daily budget ------------------------
+    // Only entries are "copied signals". With maxPerDay=2 and one entry + its
+    // close, a second entry must still fit — the old accounting counted the close
+    // as a second signal and would wrongly refuse it (so this distinguishes the
+    // fix from the bug, not just documents intent).
+    {
+      await clear();
+      const cap = settings({ maxPerDay: 2 });
+      await processUser(userId, cap, [signal("lot:budget-1")], adapter);
+      await sweepCloses(); // ends it → a CLOSE row joins the entry
+      const after = await processUser(userId, cap, [signal("lot:budget-2")], adapter);
+      check("a CLOSE does not consume the daily entry budget",
+        after.find((d) => d.signalId === "lot:budget-2")?.status === "QUEUED",
+        after.find((d) => d.signalId === "lot:budget-2")?.status);
+    }
+
     // --- entries that never reached a broker must not be closed -------------
     {
       await clear();
