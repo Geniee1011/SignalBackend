@@ -29,12 +29,17 @@ CREATE INDEX IF NOT EXISTS "signal_User_email_idx" ON "signal"."User" ("email");
 --   accessMinConviction integer : only deliver conviction >= this (1..4)
 --   accessLive          boolean : see ACTIVE (live) signals, or only closed history
 --   accessSuspended     boolean : cut the feed entirely (without deleting the user)
+--   accessAllocationPercent integer : COPY share of eligible signals (0-100). The
+--                                     subscriber still SEES all of them; only the
+--                                     copy engine trades this slice, so a fleet of
+--                                     accounts doesn't place identical trades. 100 = all.
 ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessMarkets"       text[]  NOT NULL DEFAULT '{}';
 ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessDirection"     text    NOT NULL DEFAULT 'BOTH';
 ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessDailyLimit"    integer;
 ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessMinConviction" integer NOT NULL DEFAULT 1;
 ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessLive"          boolean NOT NULL DEFAULT true;
 ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessSuspended"     boolean NOT NULL DEFAULT false;
+ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessAllocationPercent" integer NOT NULL DEFAULT 100;
 
 -- ---------------------------------------------------------------------------
 -- Broker integration (Tradovate). Phase 1 is strictly ONE-TO-ONE: a subscriber

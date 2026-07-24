@@ -6,6 +6,7 @@ import { listCopyUsers, type CopySettings } from "./copy-settings.js";
 import { toIntent, type BrokerAdapter, type OrderIntent } from "./adapter.js";
 import { sizeByRisk } from "./sizing.js";
 import { getRiskConfig, riskForConviction, DEFAULT_RISK, type RiskConfig } from "./risk-config.js";
+import { isAllocated } from "./allocation.js";
 
 /* The copy engine — turns live signals into per-subscriber orders.
  *
@@ -43,11 +44,19 @@ export interface CopyDecision {
   reason?: string;
 }
 
-/** Signals the user may SEE — access is authoritative and applied first. */
-async function visibleSignals(userId: string, signals: Signal[]): Promise<Signal[]> {
+/**
+ * Signals this user actually COPIES: entitled (access) AND allocated (their share).
+ *
+ * Allocation is applied HERE, in the copy path only — never in applyAccess, which
+ * the Signals/Performance views also use. The subscriber still SEES every signal
+ * their access covers; they just don't trade the whole stream, so a fleet of
+ * accounts doesn't place identical trades. allocationPercent = 100 → the full set.
+ */
+async function copyableSignals(userId: string, signals: Signal[]): Promise<Signal[]> {
   const access = await getUserAccess(userId);
   // Locked signals are teasers (levels hidden); they must never be traded.
-  return applyAccess(signals, access).filter((s) => !s.locked);
+  const entitled = applyAccess(signals, access).filter((s) => !s.locked);
+  return entitled.filter((s) => isAllocated(s.id, userId, access.allocationPercent));
 }
 
 /** Does this signal match the user's own copy preferences? */
@@ -231,7 +240,7 @@ export async function processUser(
   const out: CopyDecision[] = [];
   if (settings.mode === "off") return out;
 
-  const visible = await visibleSignals(userId, signals);
+  const visible = await copyableSignals(userId, signals);
   // Oldest first: if the daily cap bites, the user gets the signals that fired
   // first rather than an arbitrary subset.
   const candidates = visible.slice().sort((a, b) => a.openedAt - b.openedAt);

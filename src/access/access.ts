@@ -20,6 +20,10 @@ export interface AccessConfig {
   minConviction: number; // only deliver conviction >= this (1..4)
   live: boolean; // see ACTIVE (live) signals, or only closed history
   suspended: boolean; // cut the feed entirely
+  // COPY share of eligible signals (0-100). The subscriber still SEES all of them;
+  // only the copy engine trades this slice, so many accounts don't place identical
+  // trades. 100 = copy everything (the default, i.e. unchanged behaviour).
+  allocationPercent: number;
 }
 
 export const DEFAULT_ACCESS: AccessConfig = {
@@ -29,6 +33,7 @@ export const DEFAULT_ACCESS: AccessConfig = {
   minConviction: 1,
   live: true,
   suspended: false,
+  allocationPercent: 100,
 };
 
 /** Map a raw signal."User" row's access columns into a typed config. */
@@ -41,7 +46,14 @@ export function mapAccess(r: Record<string, unknown>): AccessConfig {
     minConviction: r.accessMinConviction == null ? 1 : Number(r.accessMinConviction),
     live: r.accessLive !== false,
     suspended: r.accessSuspended === true,
+    allocationPercent: r.accessAllocationPercent == null ? 100 : clampPercent(Number(r.accessAllocationPercent)),
   };
+}
+
+/** Clamp an allocation percent to a whole number in [0, 100]; default 100. */
+function clampPercent(n: number): number {
+  if (!Number.isFinite(n)) return 100;
+  return Math.min(100, Math.max(0, Math.round(n)));
 }
 
 /**
@@ -69,6 +81,7 @@ export function sanitizeAccess(input: unknown): AccessConfig {
     minConviction,
     live: o.live !== false,
     suspended: o.suspended === true,
+    allocationPercent: o.allocationPercent == null ? 100 : clampPercent(Number(o.allocationPercent)),
   };
 }
 
@@ -122,7 +135,7 @@ export function applyAccess(signals: Signal[], access: AccessConfig): Signal[] {
 // --- persistence -----------------------------------------------------------
 
 const ACCESS_COLS =
-  `"accessMarkets","accessDirection","accessDailyLimit","accessMinConviction","accessLive","accessSuspended"`;
+  `"accessMarkets","accessDirection","accessDailyLimit","accessMinConviction","accessLive","accessSuspended","accessAllocationPercent"`;
 
 /** Read one user's access config (defaults if the row is missing). */
 export async function getUserAccess(userId: string): Promise<AccessConfig> {
@@ -139,9 +152,10 @@ export async function updateUserAccess(userId: string, access: AccessConfig): Pr
     `UPDATE "signal"."User" SET
        "accessMarkets" = $2, "accessDirection" = $3, "accessDailyLimit" = $4,
        "accessMinConviction" = $5, "accessLive" = $6, "accessSuspended" = $7,
+       "accessAllocationPercent" = $8,
        "updatedAt" = now()
      WHERE "id" = $1`,
-    [userId, access.markets, access.direction, access.dailyLimit, access.minConviction, access.live, access.suspended],
+    [userId, access.markets, access.direction, access.dailyLimit, access.minConviction, access.live, access.suspended, access.allocationPercent],
   );
 }
 
