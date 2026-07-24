@@ -139,3 +139,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS "CopyOrder_user_signal_kind_key"
 -- once real money was on the line.
 COMMENT ON COLUMN "signal"."CopyOrder"."status" IS
   'PENDING_CONFIRM | QUEUED | PLACED | DRY_RUN | REJECTED | SKIPPED | EXPIRED | ABANDONED';
+
+-- Global key/value settings for the signal service (admin-configured). Currently
+-- holds the conviction->risk map that drives position sizing; a table rather than
+-- env vars because the admin edits it live from the dashboard.
+CREATE TABLE IF NOT EXISTS "signal"."AppSetting" (
+  "key"       text PRIMARY KEY,
+  "value"     jsonb NOT NULL,
+  "updatedAt" timestamptz NOT NULL DEFAULT now()
+);

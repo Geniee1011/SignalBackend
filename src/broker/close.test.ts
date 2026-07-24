@@ -58,8 +58,10 @@ async function main(): Promise<void> {
       const closes = await ordersFor("CLOSE");
       check("close queued when the signal disappears", closes.length === 1, `got ${closes.length}`);
       check("close carries the ENTRY's side (to flatten, not reverse)", closes[0]?.side === "SHORT", closes[0]?.side);
-      check("close carries the same quantity", Number(closes[0]?.quantity) === 1);
-      check("close carries the same symbol", closes[0]?.symbol === "ES");
+      // The close mirrors the ENTRY's risk-sized values: conviction 2 → $200, a 10pt
+      // stop on MES ($5/pt) = $50/contract → 4 micros of MES.
+      check("close carries the entry's sized quantity", Number(closes[0]?.quantity) === 4, `${closes[0]?.quantity}`);
+      check("close carries the entry's micro symbol", closes[0]?.symbol === "MES", closes[0]?.symbol);
     }
 
     // --- idempotency: the sweep runs every tick -----------------------------

@@ -67,14 +67,23 @@ export interface BrokerAdapter {
   placeOrder(intent: OrderIntent): Promise<PlaceResult>;
 }
 
-/** Build the order intent for a signal — the counter-side is already in the signal. */
-export function toIntent(signal: Signal, userId: string, quantity: number): OrderIntent {
+/**
+ * Build the order intent for a signal — the counter-side is already in the signal.
+ * `sized` carries the SYMBOL and QUANTITY chosen by risk sizing (typically the
+ * micro contract), which is why they are passed in rather than read off the signal:
+ * the signal names the mini root, but we may trade the micro to hit a risk target.
+ */
+export function toIntent(
+  signal: Signal,
+  userId: string,
+  sized: { symbol: string; quantity: number },
+): OrderIntent {
   return {
     signalId: signal.id,
     userId,
-    symbol: signal.market || signal.symbol,
+    symbol: sized.symbol,
     side: signal.side,
-    quantity,
+    quantity: sized.quantity,
     stopLoss: signal.stopLoss,
     takeProfit: signal.takeProfit,
     referencePrice: signal.entry,

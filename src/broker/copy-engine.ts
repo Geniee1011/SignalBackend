@@ -4,6 +4,8 @@ import { getActiveSignals, type Signal } from "../signals/source.js";
 import { applyAccess, getUserAccess } from "../access/access.js";
 import { listCopyUsers, type CopySettings } from "./copy-settings.js";
 import { toIntent, type BrokerAdapter, type OrderIntent } from "./adapter.js";
+import { sizeByRisk } from "./sizing.js";
+import { getRiskConfig, riskForConviction, DEFAULT_RISK, type RiskConfig } from "./risk-config.js";
 
 /* The copy engine — turns live signals into per-subscriber orders.
  *
@@ -224,6 +226,7 @@ export async function processUser(
   settings: CopySettings,
   signals: Signal[],
   adapter: BrokerAdapter,
+  riskConfig: RiskConfig = DEFAULT_RISK,
 ): Promise<CopyDecision[]> {
   const out: CopyDecision[] = [];
   if (settings.mode === "off") return out;
@@ -236,8 +239,6 @@ export async function processUser(
   let usage = await usageFor(userId);
 
   for (const signal of candidates) {
-    const intent = toIntent(signal, userId, settings.quantity);
-
     const mismatch = matchesCopyFilters(signal, settings);
     if (mismatch) {
       // Not recorded: a market the user never intended to trade isn't a "skip"
@@ -245,6 +246,20 @@ export async function processUser(
       out.push({ userId, signalId: signal.id, status: "SKIPPED", reason: mismatch });
       continue;
     }
+
+    // Size the trade to this conviction's target dollar risk — usually in micro
+    // contracts, so the symbol/quantity here can differ from the mini the trader
+    // used. Unsizeable (no stop to measure risk against) SKIPS, and deliberately
+    // does NOT record a row: the trader's protective bracket can land a tick or two
+    // after entry, and a recorded skip would block that signal forever through the
+    // UNIQUE(userId,signalId,kind) guard.
+    const sized = sizeByRisk(signal, riskForConviction(riskConfig, signal.conviction));
+    if (!sized) {
+      out.push({ userId, signalId: signal.id, status: "SKIPPED", reason: "no stop — cannot size by risk" });
+      continue;
+    }
+
+    const intent = toIntent(signal, userId, sized);
 
     // Check caps BEFORE claiming, so a full budget doesn't burn the slot — the
     // signal stays eligible if a position closes later in the session.
@@ -299,7 +314,12 @@ export async function processUser(
 /** One pass over every copy-enabled subscriber. Exported for tests. */
 export async function runOnce(adapter: BrokerAdapter): Promise<CopyDecision[]> {
   if (!config.copyExecutionEnabled) return [];
-  const [users, signals] = await Promise.all([listCopyUsers(), getActiveSignals()]);
+  // The conviction->risk map is loaded once per tick (not per user) — it's global.
+  const [users, signals, riskConfig] = await Promise.all([
+    listCopyUsers(),
+    getActiveSignals(),
+    getRiskConfig(),
+  ]);
 
   // Demo signals must never reach a broker. They're synthesized for design work
   // and would place real orders against prices that were never quoted.
@@ -321,7 +341,7 @@ export async function runOnce(adapter: BrokerAdapter): Promise<CopyDecision[]> {
 
   for (const { userId, settings } of users) {
     try {
-      out.push(...(await processUser(userId, settings, real, adapter)));
+      out.push(...(await processUser(userId, settings, real, adapter, riskConfig)));
     } catch (err) {
       console.warn(`[copy] user ${userId} failed:`, (err as Error).message);
     }

@@ -6,6 +6,7 @@ import { getSignals, getSignalsRange, getMirrorSignals } from "../signals/source
 import { getLink, connect as connectBroker, disconnect as disconnectBroker } from "../broker/links.js";
 import { brokerCryptoReady } from "../broker/crypto.js";
 import { getCopySettings, updateCopySettings, sanitizeCopySettings } from "../broker/copy-settings.js";
+import { getRiskConfig, setRiskConfig } from "../broker/risk-config.js";
 import { collect, acknowledge, recentOrders } from "../broker/queue.js";
 import { getPerformance } from "../signals/performance.js";
 import {
@@ -221,6 +222,17 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (body?.access !== undefined) await updateUserAccess(id, sanitizeAccess(body.access));
     if (body?.status === "ACTIVE" || body?.status === "SUSPENDED") await setUserStatus(id, body.status);
     return json(res, 200, { ok: true });
+  }
+
+  // Global conviction→risk map that drives copy position sizing.
+  if (path === "/api/admin/risk-config" && req.method === "GET") {
+    if (!(await requireAdmin(req))) return json(res, 403, { error: "forbidden" });
+    return json(res, 200, await getRiskConfig());
+  }
+  if (path === "/api/admin/risk-config" && (req.method === "PUT" || req.method === "POST")) {
+    if (!(await requireAdmin(req))) return json(res, 403, { error: "forbidden" });
+    const body = await readJson<unknown>(req);
+    return json(res, 200, await setRiskConfig(body)); // sanitized inside
   }
 
   // --- broker link (Tradovate), one account per subscriber ---
