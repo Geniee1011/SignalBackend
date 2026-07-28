@@ -24,6 +24,11 @@ export interface AccessConfig {
   // only the copy engine trades this slice, so many accounts don't place identical
   // trades. 100 = copy everything (the default, i.e. unchanged behaviour).
   allocationPercent: number;
+  // Admin HARD cap on COPIED trades per rolling 24h; null = no cap. Enforced in the
+  // copy engine as min(this, the subscriber's own Max-per-day), so the admin cap
+  // always wins and the subscriber can't raise their way past it. Distinct from
+  // dailyLimit, which caps the FEED (visibility), not execution.
+  maxCopiesPerDay: number | null;
 }
 
 export const DEFAULT_ACCESS: AccessConfig = {
@@ -34,6 +39,7 @@ export const DEFAULT_ACCESS: AccessConfig = {
   live: true,
   suspended: false,
   allocationPercent: 100,
+  maxCopiesPerDay: null,
 };
 
 /** Map a raw signal."User" row's access columns into a typed config. */
@@ -47,7 +53,15 @@ export function mapAccess(r: Record<string, unknown>): AccessConfig {
     live: r.accessLive !== false,
     suspended: r.accessSuspended === true,
     allocationPercent: r.accessAllocationPercent == null ? 100 : clampPercent(Number(r.accessAllocationPercent)),
+    maxCopiesPerDay: clampNullableCount(r.accessMaxCopiesPerDay),
   };
+}
+
+/** A non-negative whole count, or null (no cap). Anything malformed → null. */
+function clampNullableCount(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = Math.floor(Number(v));
+  return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
 /** Clamp an allocation percent to a whole number in [0, 100]; default 100. */
@@ -82,6 +96,7 @@ export function sanitizeAccess(input: unknown): AccessConfig {
     live: o.live !== false,
     suspended: o.suspended === true,
     allocationPercent: o.allocationPercent == null ? 100 : clampPercent(Number(o.allocationPercent)),
+    maxCopiesPerDay: clampNullableCount(o.maxCopiesPerDay),
   };
 }
 
@@ -135,7 +150,7 @@ export function applyAccess(signals: Signal[], access: AccessConfig): Signal[] {
 // --- persistence -----------------------------------------------------------
 
 const ACCESS_COLS =
-  `"accessMarkets","accessDirection","accessDailyLimit","accessMinConviction","accessLive","accessSuspended","accessAllocationPercent"`;
+  `"accessMarkets","accessDirection","accessDailyLimit","accessMinConviction","accessLive","accessSuspended","accessAllocationPercent","accessMaxCopiesPerDay"`;
 
 /** Read one user's access config (defaults if the row is missing). */
 export async function getUserAccess(userId: string): Promise<AccessConfig> {
@@ -152,10 +167,10 @@ export async function updateUserAccess(userId: string, access: AccessConfig): Pr
     `UPDATE "signal"."User" SET
        "accessMarkets" = $2, "accessDirection" = $3, "accessDailyLimit" = $4,
        "accessMinConviction" = $5, "accessLive" = $6, "accessSuspended" = $7,
-       "accessAllocationPercent" = $8,
+       "accessAllocationPercent" = $8, "accessMaxCopiesPerDay" = $9,
        "updatedAt" = now()
      WHERE "id" = $1`,
-    [userId, access.markets, access.direction, access.dailyLimit, access.minConviction, access.live, access.suspended, access.allocationPercent],
+    [userId, access.markets, access.direction, access.dailyLimit, access.minConviction, access.live, access.suspended, access.allocationPercent, access.maxCopiesPerDay],
   );
 }
 

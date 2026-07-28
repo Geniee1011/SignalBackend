@@ -1,7 +1,7 @@
 import { getPool } from "../db/pool.js";
 import { config } from "../config.js";
 import { getActiveSignals, type Signal } from "../signals/source.js";
-import { applyAccess, getUserAccess } from "../access/access.js";
+import { applyAccess, getUserAccess, type AccessConfig } from "../access/access.js";
 import { listCopyUsers, type CopySettings } from "./copy-settings.js";
 import { toIntent, type BrokerAdapter, type OrderIntent } from "./adapter.js";
 import { sizeByRisk } from "./sizing.js";
@@ -52,8 +52,7 @@ export interface CopyDecision {
  * their access covers; they just don't trade the whole stream, so a fleet of
  * accounts doesn't place identical trades. allocationPercent = 100 → the full set.
  */
-async function copyableSignals(userId: string, signals: Signal[]): Promise<Signal[]> {
-  const access = await getUserAccess(userId);
+function copyableSignals(access: AccessConfig, userId: string, signals: Signal[]): Signal[] {
   // Locked signals are teasers (levels hidden); they must never be traded.
   const entitled = applyAccess(signals, access).filter((s) => !s.locked);
   return entitled.filter((s) => isAllocated(s.id, userId, access.allocationPercent));
@@ -240,10 +239,18 @@ export async function processUser(
   const out: CopyDecision[] = [];
   if (settings.mode === "off") return out;
 
-  const visible = await copyableSignals(userId, signals);
+  const access = await getUserAccess(userId);
+  const visible = copyableSignals(access, userId, signals);
   // Oldest first: if the daily cap bites, the user gets the signals that fired
   // first rather than an arbitrary subset.
   const candidates = visible.slice().sort((a, b) => a.openedAt - b.openedAt);
+
+  // The admin's per-day copy cap ALWAYS wins over the subscriber's own Max-per-day —
+  // the subscriber can lower their limit but never raise past what the admin set.
+  const maxPerDay =
+    access.maxCopiesPerDay == null
+      ? settings.maxPerDay
+      : Math.min(settings.maxPerDay, access.maxCopiesPerDay);
 
   let usage = await usageFor(userId);
 
@@ -275,8 +282,12 @@ export async function processUser(
 
     // Check caps BEFORE claiming, so a full budget doesn't burn the slot — the
     // signal stays eligible if a position closes later in the session.
-    if (usage.today >= settings.maxPerDay) {
-      out.push({ userId, signalId: signal.id, status: "SKIPPED", reason: "daily copy limit reached" });
+    if (usage.today >= maxPerDay) {
+      const reason =
+        access.maxCopiesPerDay != null && maxPerDay === access.maxCopiesPerDay
+          ? `daily copy limit reached (admin cap ${access.maxCopiesPerDay})`
+          : "daily copy limit reached";
+      out.push({ userId, signalId: signal.id, status: "SKIPPED", reason });
       continue;
     }
     if (usage.open >= settings.maxConcurrent) {

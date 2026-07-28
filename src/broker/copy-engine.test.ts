@@ -96,6 +96,19 @@ async function main(): Promise<void> {
       check("per-account base scales the size", a.placed[0]?.quantity === 6, `got ${a.placed[0]?.quantity}`);
     }
 
+    // --- admin per-day copy cap (overrides the subscriber's own limit) ------
+    {
+      await clear();
+      const a = new MockAdapter();
+      // Admin caps this account at 1 copied trade/day; the subscriber asks for 99.
+      await pool.query(`UPDATE "signal"."User" SET "accessMaxCopiesPerDay" = 1 WHERE "id" = $1`, [userId]);
+      const out = await processUser(userId, settings({ maxPerDay: 99 }), [signal(), signal()], a);
+      check("admin cap places only N/day", a.placed.length === 1, `placed ${a.placed.length}`);
+      const capped = out.find((d) => d.status === "SKIPPED" && /admin cap/.test(d.reason ?? ""));
+      check("the extra is skipped citing the admin cap", !!capped, out.map((d) => d.reason).join(" | "));
+      await pool.query(`UPDATE "signal"."User" SET "accessMaxCopiesPerDay" = NULL WHERE "id" = $1`, [userId]);
+    }
+
     // --- filters -----------------------------------------------------------
     {
       await clear();

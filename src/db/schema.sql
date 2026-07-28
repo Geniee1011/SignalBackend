@@ -40,6 +40,12 @@ ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessMinConviction" integ
 ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessLive"          boolean NOT NULL DEFAULT true;
 ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessSuspended"     boolean NOT NULL DEFAULT false;
 ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessAllocationPercent" integer NOT NULL DEFAULT 100;
+--   accessMaxCopiesPerDay integer : admin HARD cap on COPIED trades per rolling 24h
+--                                   (NULL = no cap). Enforced in the copy engine as
+--                                   min(this, the subscriber's own Max-per-day), so
+--                                   the admin cap always wins. Distinct from
+--                                   accessDailyLimit, which caps the FEED, not execution.
+ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "accessMaxCopiesPerDay" integer;
 
 -- ---------------------------------------------------------------------------
 -- Broker integration (Tradovate). Phase 1 is strictly ONE-TO-ONE: a subscriber
