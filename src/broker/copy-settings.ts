@@ -23,18 +23,21 @@ export interface CopySettings {
   mode: CopyMode;
   markets: string[]; // [] = every market they can see
   minConviction: number; // 1..4
-  quantity: number; // contracts per signal
+  // Base dollar risk per trade. The engine risks baseRisk × the signal's conviction
+  // (1..4), sized in micro contracts. null = inherit the global default base.
+  // Supersedes the old flat contracts-per-signal count.
+  baseRisk: number | null;
   maxConcurrent: number; // open copied positions at once
   maxPerDay: number; // copied orders per rolling day
 }
 
 export const DEFAULT_COPY: CopySettings = {
-  // Off, and 1 contract: the defaults must be the safest possible position for a
-  // user who never opens the settings page.
+  // Off, and inherit the global base: the defaults must be the safest possible
+  // position for a user who never opens the settings page.
   mode: "off",
   markets: [],
   minConviction: 1,
-  quantity: 1,
+  baseRisk: null,
   maxConcurrent: 3,
   maxPerDay: 10,
 };
@@ -43,6 +46,14 @@ const clampInt = (v: unknown, min: number, max: number, fallback: number): numbe
   const n = Math.floor(Number(v));
   if (!Number.isFinite(n)) return fallback;
   return Math.min(Math.max(n, min), max);
+};
+
+/** A per-account base risk in whole dollars, or null to inherit the global base. */
+const clampBaseRisk = (v: unknown): number | null => {
+  if (v == null || v === "") return null;
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.min(n, 100_000);
 };
 
 /** Map the signal."User" copy* columns into a typed config. */
@@ -55,7 +66,7 @@ export function mapCopySettings(r: Record<string, unknown>): CopySettings {
     mode,
     markets: Array.isArray(r.copyMarkets) ? (r.copyMarkets as string[]) : [],
     minConviction: clampInt(r.copyMinConviction, 1, 4, 1),
-    quantity: clampInt(r.copyQuantity, 1, 100, 1),
+    baseRisk: clampBaseRisk(r.copyBaseRisk),
     maxConcurrent: clampInt(r.copyMaxConcurrent, 1, 50, 3),
     maxPerDay: clampInt(r.copyMaxPerDay, 1, 200, 10),
   };
@@ -72,7 +83,7 @@ export function sanitizeCopySettings(input: unknown): CopySettings {
     mode,
     markets,
     minConviction: clampInt(o.minConviction, 1, 4, 1),
-    quantity: clampInt(o.quantity, 1, 100, 1),
+    baseRisk: clampBaseRisk(o.baseRisk),
     maxConcurrent: clampInt(o.maxConcurrent, 1, 50, 3),
     maxPerDay: clampInt(o.maxPerDay, 1, 200, 10),
   };
@@ -80,7 +91,7 @@ export function sanitizeCopySettings(input: unknown): CopySettings {
 
 export async function getCopySettings(userId: string): Promise<CopySettings> {
   const { rows } = await getPool().query(
-    `SELECT "copyMode","copyEnabled","copyMarkets","copyMinConviction","copyQuantity",
+    `SELECT "copyMode","copyEnabled","copyMarkets","copyMinConviction","copyBaseRisk",
             "copyMaxConcurrent","copyMaxPerDay"
      FROM "signal"."User" WHERE "id" = $1`,
     [userId],
@@ -92,16 +103,16 @@ export async function updateCopySettings(userId: string, s: CopySettings): Promi
   await getPool().query(
     `UPDATE "signal"."User"
      SET "copyMode" = $2, "copyEnabled" = $3, "copyMarkets" = $4, "copyMinConviction" = $5,
-         "copyQuantity" = $6, "copyMaxConcurrent" = $7, "copyMaxPerDay" = $8, "updatedAt" = now()
+         "copyBaseRisk" = $6, "copyMaxConcurrent" = $7, "copyMaxPerDay" = $8, "updatedAt" = now()
      WHERE "id" = $1`,
-    [userId, s.mode, s.mode === "auto", s.markets, s.minConviction, s.quantity, s.maxConcurrent, s.maxPerDay],
+    [userId, s.mode, s.mode === "auto", s.markets, s.minConviction, s.baseRisk, s.maxConcurrent, s.maxPerDay],
   );
 }
 
 /** Every user with copying switched on — the engine's work list. */
 export async function listCopyUsers(): Promise<{ userId: string; settings: CopySettings }[]> {
   const { rows } = await getPool().query(
-    `SELECT "id","copyMode","copyEnabled","copyMarkets","copyMinConviction","copyQuantity",
+    `SELECT "id","copyMode","copyEnabled","copyMarkets","copyMinConviction","copyBaseRisk",
             "copyMaxConcurrent","copyMaxPerDay"
      FROM "signal"."User"
      WHERE "status" = 'ACTIVE' AND "accessSuspended" = false

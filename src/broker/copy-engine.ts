@@ -5,7 +5,7 @@ import { applyAccess, getUserAccess } from "../access/access.js";
 import { listCopyUsers, type CopySettings } from "./copy-settings.js";
 import { toIntent, type BrokerAdapter, type OrderIntent } from "./adapter.js";
 import { sizeByRisk } from "./sizing.js";
-import { getRiskConfig, riskForConviction, DEFAULT_RISK, type RiskConfig } from "./risk-config.js";
+import { getBaseRisk, riskForConviction, DEFAULT_BASE_RISK } from "./risk-config.js";
 import { isAllocated } from "./allocation.js";
 
 /* The copy engine — turns live signals into per-subscriber orders.
@@ -235,7 +235,7 @@ export async function processUser(
   settings: CopySettings,
   signals: Signal[],
   adapter: BrokerAdapter,
-  riskConfig: RiskConfig = DEFAULT_RISK,
+  baseRiskDefault: number = DEFAULT_BASE_RISK,
 ): Promise<CopyDecision[]> {
   const out: CopyDecision[] = [];
   if (settings.mode === "off") return out;
@@ -256,13 +256,16 @@ export async function processUser(
       continue;
     }
 
-    // Size the trade to this conviction's target dollar risk — usually in micro
-    // contracts, so the symbol/quantity here can differ from the mini the trader
-    // used. Unsizeable (no stop to measure risk against) SKIPS, and deliberately
-    // does NOT record a row: the trader's protective bracket can land a tick or two
-    // after entry, and a recorded skip would block that signal forever through the
+    // Size the trade to this conviction's target dollar risk — this account's base
+    // risk × the signal's conviction (1..4), falling back to the global default base
+    // when the subscriber hasn't set their own. Usually placed in micro contracts, so
+    // the symbol/quantity here can differ from the mini the trader used. Unsizeable
+    // (no stop to measure risk against) SKIPS, and deliberately does NOT record a row:
+    // the trader's protective bracket can land a tick or two after entry, and a
+    // recorded skip would block that signal forever through the
     // UNIQUE(userId,signalId,kind) guard.
-    const sized = sizeByRisk(signal, riskForConviction(riskConfig, signal.conviction));
+    const base = settings.baseRisk ?? baseRiskDefault;
+    const sized = sizeByRisk(signal, riskForConviction(base, signal.conviction));
     if (!sized) {
       out.push({ userId, signalId: signal.id, status: "SKIPPED", reason: "no stop — cannot size by risk" });
       continue;
@@ -323,11 +326,12 @@ export async function processUser(
 /** One pass over every copy-enabled subscriber. Exported for tests. */
 export async function runOnce(adapter: BrokerAdapter): Promise<CopyDecision[]> {
   if (!config.copyExecutionEnabled) return [];
-  // The conviction->risk map is loaded once per tick (not per user) — it's global.
-  const [users, signals, riskConfig] = await Promise.all([
+  // The global DEFAULT base risk is loaded once per tick (not per user); each user
+  // may still override it with their own account base (settings.baseRisk).
+  const [users, signals, baseRiskDefault] = await Promise.all([
     listCopyUsers(),
     getActiveSignals(),
-    getRiskConfig(),
+    getBaseRisk(),
   ]);
 
   // Demo signals must never reach a broker. They're synthesized for design work
@@ -350,7 +354,7 @@ export async function runOnce(adapter: BrokerAdapter): Promise<CopyDecision[]> {
 
   for (const { userId, settings } of users) {
     try {
-      out.push(...(await processUser(userId, settings, real, adapter, riskConfig)));
+      out.push(...(await processUser(userId, settings, real, adapter, baseRiskDefault)));
     } catch (err) {
       console.warn(`[copy] user ${userId} failed:`, (err as Error).message);
     }

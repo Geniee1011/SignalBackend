@@ -6,7 +6,7 @@ import { getSignals, getSignalsRange, getMirrorSignals } from "../signals/source
 import { getLink, connect as connectBroker, disconnect as disconnectBroker } from "../broker/links.js";
 import { brokerCryptoReady } from "../broker/crypto.js";
 import { getCopySettings, updateCopySettings, sanitizeCopySettings } from "../broker/copy-settings.js";
-import { getRiskConfig, setRiskConfig } from "../broker/risk-config.js";
+import { getBaseRisk, setBaseRisk } from "../broker/risk-config.js";
 import { collect, acknowledge, recentOrders } from "../broker/queue.js";
 import { getPerformance } from "../signals/performance.js";
 import {
@@ -224,15 +224,16 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return json(res, 200, { ok: true });
   }
 
-  // Global conviction→risk map that drives copy position sizing.
+  // Global DEFAULT base risk per trade that drives copy position sizing. Risk on a
+  // signal = base × its conviction (1..4); per-account overrides live in copy settings.
   if (path === "/api/admin/risk-config" && req.method === "GET") {
     if (!(await requireAdmin(req))) return json(res, 403, { error: "forbidden" });
-    return json(res, 200, await getRiskConfig());
+    return json(res, 200, { baseRisk: await getBaseRisk() });
   }
   if (path === "/api/admin/risk-config" && (req.method === "PUT" || req.method === "POST")) {
     if (!(await requireAdmin(req))) return json(res, 403, { error: "forbidden" });
     const body = await readJson<unknown>(req);
-    return json(res, 200, await setRiskConfig(body)); // sanitized inside
+    return json(res, 200, { baseRisk: await setBaseRisk(body) }); // sanitized inside
   }
 
   // --- broker link (Tradovate), one account per subscriber ---
@@ -276,7 +277,12 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   if (path === "/api/copy/settings" && req.method === "GET") {
     const payload = requireUser(req);
     if (!payload) return json(res, 401, { error: "unauthorized" });
-    return json(res, 200, await getCopySettings(payload.sub));
+    const s = await getCopySettings(payload.sub);
+    // Show the EFFECTIVE base in the settings UI: an account that hasn't set its own
+    // base inherits the global default, so surface that concrete number rather than a
+    // blank. The engine reads the raw (possibly null) value straight from the DB.
+    if (s.baseRisk == null) s.baseRisk = await getBaseRisk();
+    return json(res, 200, s);
   }
   if (path === "/api/copy/settings" && (req.method === "PUT" || req.method === "POST")) {
     const payload = requireUser(req);

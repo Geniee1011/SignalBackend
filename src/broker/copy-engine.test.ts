@@ -76,14 +76,24 @@ async function main(): Promise<void> {
     {
       await clear();
       const a = new MockAdapter();
-      await processUser(userId, settings({ quantity: 2 }), [signal({ side: "SHORT", stopLoss: 7520, takeProfit: 7460 })], a);
+      await processUser(userId, settings(), [signal({ side: "SHORT", stopLoss: 7520, takeProfit: 7460 })], a);
       const o = a.placed[0];
       check("side is the signal's counter side", o?.side === "SHORT");
-      // Risk sizing supersedes the flat `quantity`: conviction 3 → $300 target, a
-      // 20pt stop on MES ($5/pt) = $100/contract → 3 micros. The `quantity: 2` is ignored.
-      check("quantity is risk-sized, not the flat setting", o?.quantity === 3, `got ${o?.quantity}`);
+      // Risk sizing sets the quantity: conviction 3 × the default $100 base = $300
+      // target, a 20pt stop on MES ($5/pt) = $100/contract → 3 micros.
+      check("quantity is risk-sized (base × conviction)", o?.quantity === 3, `got ${o?.quantity}`);
       check("stop/target carried through", o?.stopLoss === 7520 && o?.takeProfit === 7460);
       check("symbol is the micro contract", o?.symbol === "MES", o?.symbol);
+    }
+
+    // --- a per-account base risk override ----------------------------------
+    {
+      await clear();
+      const a = new MockAdapter();
+      // Same conviction-3 / 20pt-stop signal, but this account sets a $200 base:
+      // 200 × 3 = $600 target ÷ $100/contract → 6 micros (double the default base).
+      await processUser(userId, settings({ baseRisk: 200 }), [signal({ side: "SHORT", stopLoss: 7520, takeProfit: 7460 })], a);
+      check("per-account base scales the size", a.placed[0]?.quantity === 6, `got ${a.placed[0]?.quantity}`);
     }
 
     // --- filters -----------------------------------------------------------

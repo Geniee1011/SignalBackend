@@ -66,8 +66,9 @@ async function main(): Promise<void> {
     // --- the order handed to the terminal ---------------------------------
     {
       await clear();
-      await processUser(userId, settings({ quantity: 3 }), [signal({ side: "LONG", stopLoss: 28850, takeProfit: 29000 })], adapter);
+      await processUser(userId, settings(), [signal({ side: "LONG", stopLoss: 28850, takeProfit: 29000 })], adapter);
       const [o] = await collect(userId);
+      // qty is risk-sized: conviction 3 × $100 base = $300 ÷ (50pt × $2/MNQ = $100) = 3 micros.
       check("carries side/qty/levels", o?.side === "LONG" && o?.quantity === 3 && o?.stopLoss === 28850 && o?.takeProfit === 29000);
       check("carries the signal id for tracing", typeof o?.signalId === "string" && o.signalId.length > 0);
     }

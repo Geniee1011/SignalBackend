@@ -1,49 +1,51 @@
 import { getPool } from "../db/pool.js";
 
-/* The global conviction -> target-risk map.
+/* The global DEFAULT base dollar-risk per trade.
  *
- * A signal's conviction (the trader's risk phase, 1-4) selects a dollar risk; the
- * copy engine then sizes the trade to it (see sizing.ts). Admin-configured and
- * live-editable from the signals dashboard, so it lives in the DB rather than in
- * env vars. One map for the whole service. */
+ * The risk taken on a copied signal is: base × conviction level (1..4). The copy
+ * engine then sizes the trade in micro contracts to hit that dollar figure (see
+ * sizing.ts) — so a level-4 signal carries 4× the size of a level-1, off one
+ * number. Each subscriber can override the base on their own account
+ * (copyBaseRisk); THIS is the fallback for anyone who hasn't. Admin-configured and
+ * live-editable from the dashboard, so it lives in the DB rather than in env vars. */
 
-export type Conviction = 1 | 2 | 3 | 4;
-export type RiskConfig = Record<Conviction, number>; // conviction -> USD risk
+/** Marvin's default: $100 of risk per conviction level (1→$100 … 4→$400). */
+export const DEFAULT_BASE_RISK = 100;
 
-/** Marvin's defaults: risk climbs $100 per conviction level. */
-export const DEFAULT_RISK: RiskConfig = { 1: 100, 2: 200, 3: 300, 4: 400 };
+const KEY = "baseRisk";
+const MIN = 1;
+const MAX = 100_000;
 
-const KEY = "convictionRisk";
-const LEVELS: Conviction[] = [1, 2, 3, 4];
-
-/** Coerce arbitrary input to a valid map: each level a positive integer, else the default. */
-export function sanitizeRiskConfig(input: unknown): RiskConfig {
-  const src = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-  const out = { ...DEFAULT_RISK };
-  for (const lvl of LEVELS) {
-    const v = Number(src[lvl] ?? src[String(lvl)]);
-    if (Number.isFinite(v) && v > 0) out[lvl] = Math.round(v);
-  }
-  return out;
+/**
+ * Coerce arbitrary input to a positive whole-dollar base, else the default.
+ * Accepts a bare number (100) or an object ({ baseRisk: 100 }) so it works on
+ * both the stored jsonb value and an admin request body.
+ */
+export function sanitizeBaseRisk(input: unknown): number {
+  const raw =
+    input && typeof input === "object" ? (input as Record<string, unknown>).baseRisk : input;
+  const n = Math.round(Number(raw));
+  if (!Number.isFinite(n) || n < MIN) return DEFAULT_BASE_RISK;
+  return Math.min(n, MAX);
 }
 
-/** The configured map, or the defaults when unset or the table is missing. */
-export async function getRiskConfig(): Promise<RiskConfig> {
+/** The configured global base, or the default when unset or the table is missing. */
+export async function getBaseRisk(): Promise<number> {
   try {
     const { rows } = await getPool().query(
       `SELECT "value" FROM "signal"."AppSetting" WHERE "key" = $1`,
       [KEY],
     );
-    return rows[0] ? sanitizeRiskConfig(rows[0].value) : { ...DEFAULT_RISK };
+    return rows[0] ? sanitizeBaseRisk(rows[0].value) : DEFAULT_BASE_RISK;
   } catch {
-    // Table not migrated yet → fall back to defaults rather than break sizing.
-    return { ...DEFAULT_RISK };
+    // Table not migrated yet → fall back to the default rather than break sizing.
+    return DEFAULT_BASE_RISK;
   }
 }
 
-/** Persist the map (sanitized). Returns what was stored. */
-export async function setRiskConfig(input: unknown): Promise<RiskConfig> {
-  const clean = sanitizeRiskConfig(input);
+/** Persist the global base (sanitized). Returns what was stored. */
+export async function setBaseRisk(input: unknown): Promise<number> {
+  const clean = sanitizeBaseRisk(input);
   await getPool().query(
     `INSERT INTO "signal"."AppSetting" ("key","value","updatedAt")
      VALUES ($1, $2::jsonb, now())
@@ -53,8 +55,8 @@ export async function setRiskConfig(input: unknown): Promise<RiskConfig> {
   return clean;
 }
 
-/** Target risk for a signal's conviction, clamped into 1-4. */
-export function riskForConviction(config: RiskConfig, conviction: number): number {
-  const lvl = Math.min(4, Math.max(1, Math.round(conviction || 1))) as Conviction;
-  return config[lvl];
+/** Target dollar risk for a signal: base × conviction level, clamped to 1..4. */
+export function riskForConviction(base: number, conviction: number): number {
+  const lvl = Math.min(4, Math.max(1, Math.round(conviction || 1)));
+  return base * lvl;
 }

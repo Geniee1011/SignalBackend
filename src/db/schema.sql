@@ -81,6 +81,14 @@ ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "copyQuantity"      integer
 ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "copyMaxConcurrent" integer NOT NULL DEFAULT 3;
 ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "copyMaxPerDay"     integer NOT NULL DEFAULT 10;
 
+-- Per-account BASE dollar risk per trade. The risk taken on a copied signal is
+-- baseRisk × its conviction level (1..4); the engine then sizes in micro contracts
+-- to hit that figure. Set per subscriber (their account, their risk tolerance).
+-- NULL = inherit the global default base (signal.AppSetting key 'baseRisk').
+-- Supersedes the flat "copyQuantity" (contracts per signal), now vestigial: the
+-- copy engine sizes by risk, not by a fixed contract count.
+ALTER TABLE "signal"."User" ADD COLUMN IF NOT EXISTS "copyBaseRisk"      integer;
+
 -- Every copy attempt, successful or not. This table is what makes automation
 -- SAFE to re-run: the UNIQUE (userId, signalId) pair means a signal can only ever
 -- be placed once per user, so a restart, a duplicate broadcast or an overlapping
