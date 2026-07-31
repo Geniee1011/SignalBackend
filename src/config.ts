@@ -33,7 +33,42 @@ export const config = {
    * on top of this.
    */
   copyExecutionEnabled: process.env.COPY_EXECUTION === "1",
+
+  /**
+   * dxFeed / Volumetrica prop-firm platform. The regulated account + execution
+   * infrastructure we are migrating copy execution onto. The Propfirm REST API
+   * provisions users/accounts/subscriptions and mints per-user trading tokens; the
+   * Admin Trading API (WSS) then places the copied orders. See src/dxfeed.
+   */
+  dxfeed: {
+    /** Propfirm REST base, e.g. https://dxfeed.volumetricaprop.com (staging). */
+    propfirmUrl: process.env.DXFEED_PROPFIRM_URL?.trim() || "https://dxfeed.volumetricaprop.com",
+    /** x-api-key for the Propfirm REST API + webhooks. Unset = dxFeed disabled. */
+    apiKey: process.env.DXFEED_API_KEY?.trim() ?? "",
+    /** AES-256 key (base64) for encrypting user passwords in API exchanges. Optional. */
+    aesKey: process.env.DXFEED_AES_KEY?.trim() ?? "",
+    /** 0 = production, 1 = staging. Sent on the trading-token/auth requests. */
+    environment: num("DXFEED_ENVIRONMENT", 1),
+
+    /** Defaults applied when provisioning a subscriber's dxFeed account. */
+    provisioning: {
+      /** Starting balance for a new evaluation account. */
+      balance: num("DXFEED_DEFAULT_BALANCE", 50_000),
+      /** Optional challenge-template rule id to attach (empty = no rule / plain account). */
+      ruleId: process.env.DXFEED_DEFAULT_RULE_ID?.trim() ?? "",
+      /** Market-data entitlements (DataFeedProduct ints), CSV. Default: CME L1 (0). */
+      dataFeedProducts: (process.env.DXFEED_DATA_PRODUCTS?.trim() || "0")
+        .split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n)),
+      /** Subscription platform: 0 = Volumetrica, 1 = Quantower, 2 = ATAS. */
+      platform: num("DXFEED_PLATFORM", 0),
+      /** Country used for the market-data agreement when we only have an email. */
+      country: process.env.DXFEED_DEFAULT_COUNTRY?.trim() || "US",
+    },
+  },
 } as const;
+
+/** dxFeed is usable only once an API key is configured. */
+export const dxfeedReady = config.dxfeed.apiKey.length > 0;
 
 if (config.jwt.secret === "dev-insecure-signal-secret-change-me") {
   console.warn("[auth] JWT_SECRET not set — using an insecure dev secret. Set JWT_SECRET in production.");

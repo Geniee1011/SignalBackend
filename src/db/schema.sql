@@ -167,3 +167,32 @@ CREATE TABLE IF NOT EXISTS "signal"."AppSetting" (
   "value"     jsonb NOT NULL,
   "updatedAt" timestamptz NOT NULL DEFAULT now()
 );
+
+-- ---------------------------------------------------------------------------
+-- dxFeed / Volumetrica prop-account link. One row per subscriber, mapping our
+-- signal.User to the dxFeed identity provisioned for them (user + trading
+-- account + market-data subscription). This is how a subscriber ends up with a
+-- single front door: they sign up here, and their dxFeed account is created and
+-- linked behind the scenes (see src/dxfeed/provision.ts). Phase 1 is ONE-TO-ONE
+-- (a subscriber → one dxFeed account); expanding later means dropping the PK on
+-- userId and adding a "primary" flag, like BrokerLink.
+--
+-- No per-user broker credentials are stored: copy execution places orders via a
+-- single fullTrading SYSTEM credential keyed by "dxAccountId", so the account id
+-- is the only thing we need to persist here.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS "signal"."DxFeedAccount" (
+  "userId"             text PRIMARY KEY REFERENCES "signal"."User"("id") ON DELETE CASCADE,
+  "dxUserId"           text NOT NULL,                 -- dxFeed's internal user id
+  "dxAccountId"        text,                          -- dxFeed trading account id (orders target this)
+  "dxSubscriptionId"   text,                          -- market-data subscription id
+  "accountStatus"      integer,                       -- TradingAccountStatusEnum (1=Enabled, 4=Failed, …)
+  "subscriptionStatus" integer,                       -- SubscriptionStatusEnum (1=Active, 3=UserOnHold, …)
+  -- The user must sign dxFeed's data agreement (pro/no-pro) before real-time data;
+  -- the link is surfaced so we can prompt them. Signed state arrives via webhook.
+  "agreementSigned"    boolean NOT NULL DEFAULT false,
+  "agreementLink"      text,
+  "platform"           integer,                       -- PlatformEnum the subscription was created for
+  "createdAt"          timestamptz NOT NULL DEFAULT now(),
+  "updatedAt"          timestamptz NOT NULL DEFAULT now()
+);
