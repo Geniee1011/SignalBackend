@@ -1,0 +1,1245 @@
+syntax="proto3";
+package PropTradingProtocol;
+
+message PingMsg
+{
+	bool Connected = 1;
+	//if it is sent, it is returned on PongMsg as response
+	sint64 AckValue = 2;
+	sint64 PingTimestamp = 3;
+}
+message PongMsg
+{
+	bool Connected = 1;
+	//if it is sent on PingMsg, it is returned the same value
+	sint64 AckValue = 2;
+	sint64 PingTimestamp = 4;
+	sint64 PongTimestamp = 5;
+}
+
+enum SymbolCategoryEnum
+{
+	Future = 1;
+	Forex = 2;
+	Index = 3;
+	Option = 4;
+	Stock = 5;
+	CryptoPerpetual = 6;
+	Spot = 7;
+	Etf = 8;
+	CryptoSpot = 9;
+}
+enum SymbolSpreadTypeEnum
+{
+	Native = 0;
+	BidDifference = 1;
+	AskDifference = 2;
+	PercentualSpread = 3;
+}
+message ContractRequestWrapperMsg
+{
+    sint64 RequestId = 1;
+	repeated ContractReqMsg Contracts = 2;
+}
+//Request of contract id and detail based on FeedSymbol or ContractId
+message ContractReqMsg
+{
+	//Symbol of which the id must be returned. E.g.: /ESZ22.XCME
+	//The symbol root is the same of market data
+	string FeedSymbol = 1;
+	//It is optional for this scenario
+	SymbolCategoryEnum Category = 2;
+	//If "FeedSymbol" is setted, this field is ignored by the server
+	sint64 ContractId = 3;
+	//Not used in this scenario
+	string Isin = 4;
+	sint64 RequestId = 5;
+}
+message ContractResponseWrapperMsg
+{
+    sint64 RequestId = 1;
+	repeated ContractRespMsg Contracts = 2;
+}
+message ContractRespMsg
+{
+	string FeedSymbol = 1;
+	SymbolCategoryEnum Category = 2;
+	//the contract id of the symbol requested. It should be stored inside the application and used for various message like order insert, daily pl request and so on
+	sint64 ContractId = 3;
+	//some detail about the contract
+	ContractInfoMsg contractInfo = 4;
+	//it is -1 if the msg does not come from a client request
+	sint64 RequestId = 5;
+    //if it is from a request, it indicates that it is the last message of the response
+    bool IsFinal = 6;
+}
+message ContractInfoMsg{
+	string ContractName = 1;
+	string Symbol = 2;
+	string Exchange = 3;
+	string Description = 4;
+	double TickSize = 5;
+	double TickValue = 6;
+	bool IsStock = 10;
+	string FeedSymbol = 11;
+	//default is 1. 
+	//On crypto, since the minimum tradable volume is under 1, can be different. 
+	//Example: 10 means that it is possible to buy/sell 1 / 10 of contract (0.1), 100 is 1 / 100 (0.01) and so on
+	//Furthermore, the volume of the quantity received for this contract are multiplied accorindgly and same for the order submission
+	sint32 TradableQuantityFractionable = 12;
+	//it returns already 1 / TradableQuantityFractionable;
+	double TradableQuantityMultiplier = 13;
+	sint64 ContractId = 14;
+	sint64 SymbolId = 15;
+	string QuoteCurrency = 16;
+	//optional - filled only on forex symbol
+	string BaseCurrency = 17;
+	//In some circustances, it can be different compared to the TradableQuantityFractionable
+	sint32 TradableQuantityMinimum = 18;
+	//In some circustances, it can be different compared to 1
+	sint32 TradableQuantityMultiple = 19;
+	string BaseFlagIconUrl = 20;
+	string QuoteFlagIconUrl = 21;
+	SymbolCategoryEnum Category = 22;
+	sint64 DataBridgeId = 23;
+}
+message AccountTradingSymbolMultiReqMsg
+{
+	sint64 RequestId = 1;	
+	sint64 AccountId = 2;
+	repeated TradingSymbolParamReqMsg Symbols = 3;
+}
+message TradingSymbolParamReqMsg
+{
+	//Symbol of which the id must be returned. E.g.: /ESZ22.XCME
+	//The symbol root is the same of market data
+	string FeedSymbol = 3;
+	//If "FeedSymbol" is setted, this field is ignored by the server
+	sint64 ContractId = 4;
+}
+message AccountTradingSymbolMultiRespMsg
+{
+	sint64 RequestId = 1;
+	bool Success = 2;
+	string Reason = 3;	
+	repeated AccountTradingSymbolInfoMsg Infos = 4;
+}
+message AccountTradingSymbolInfoReqMsg
+{
+	sint64 RequestId = 1;	
+	sint64 AccountId = 2;
+	//Symbol of which the id must be returned. E.g.: /ESZ22.XCME
+	//The symbol root is the same of market data
+	string FeedSymbol = 3;
+	//If "FeedSymbol" is setted, this field is ignored by the server
+	sint64 ContractId = 4;
+}
+message AccountTradingSymbolInfoRespMsg
+{
+	sint64 RequestId = 1;
+	bool Success = 2;
+	string Reason = 3;	
+	AccountTradingSymbolInfoMsg Info = 4;
+}
+message AccountTradingSymbolInfoMsg
+{
+	sint64 AccountId = 1;
+	sint64 SymbolId = 2;
+	double Commissions = 3;
+	double Margin = 4;
+	sint32 Leverage = 5;
+	SymbolSpreadTypeEnum SpreadType = 6;
+	int32 SpreadTickValue = 7;
+	//default is 1. 
+	//On crypto, since the minimum tradable volume is under 1, can be different. 
+	//Example: 10 means that it is possible to buy/sell 1 / 10 of contract (0.1), 100 is 1 / 100 (0.01) and so on
+	sint32 TradableQuantityFractionable = 8;
+	double TradableQuantityMultiplier = 9;
+	string QuoteCurrency = 10;
+	//optional - filled only on forex symbol
+	string BaseCurrency = 11;
+	sint64 ContractId = 12;
+	string FeedSymbol = 13;
+}
+message DailyPlReqMsg
+{
+	sint64 ContractId = 1;
+	sint64 AccNumber = 2;
+	sint64 RequestId = 3;
+}
+message DailyPlRespMsg
+{
+	sint64 ContractId = 1;
+	sint64 AccNumber = 2;
+	double DailyPl = 3;
+	string FeedSymbol = 4;
+	//it is -1 for snapshot message, while it is the same of DailyPlReqMsg for daily pl request
+	sint64 RequestId = 5;
+	double DailyNetPl = 6;
+	//not used in this scenario
+	string Isin = 7;
+	double ConvertedDailyPl = 8;
+	double ConvertedDailyNetPl = 9;
+	sint64 DailyBought = 10;
+	sint64 DailySold = 11;
+}
+enum InfoModeEnum{
+	//used to get trading account list(AccountHeaderMsg)
+	Account = 1;
+	//used to get a snapshot of the portfolio and pending orders. It will populates orderList field and you will also receive an initial snapshot of open positions as orders infos and then order update,
+	//so it means that you have to build portfolio with the order udpates.
+	//IMPORTANT: if account is on HEDGING mode, since it is not possible to track positions based on order executions, it must be requested also position info mode
+	OrdAndPos = 2;
+	//used to get position. It will populates PositionList field and in this scenario you may use this field to show portfolio, without updating it with the order executions
+	Positions = 3;
+}
+enum AccountModeEnum
+{
+	EVALUATION = 0;
+	SIM_FUNDED = 1;
+	FUNDED = 2;
+	LIVE = 3;
+	TRIAL = 4;
+	CONTEST = 5;
+	TRAINING = 100;
+}
+enum AccountStatusEnum
+{
+	ALL = -1;
+	INITIALIZED = 0;
+	ENABLED = 1; 
+	SUCCESS = 2; 
+	FAILED = 4; 
+	DISABLED = 8; 
+}
+enum AccountPermissionEnum
+{
+	//Trading is enabled if the account is enabled
+	Trading = 0;
+	//Account is on readonly, so user cannot place trade. It is also flatten if any position is open
+	ReadOnly = 1;
+	//Account is paused by risk engine and it will be automatically enabled again (after session close or week close)
+	RiskPause = 2;
+	//Account is liquidate only
+	LiquidateOnly = 3;
+}
+message InfoReqMsg{
+	//ignored if 'Modes" field is populated
+	InfoModeEnum Mode = 1;
+	sint64 RequestId = 2;
+	//system connection only. For user, only active accounts are returned. -1 is ALL, othwerwise X_OR combination can be used
+	AccountStatusEnum AccountListFilterStatus = 3;
+	//ignore if the socket is not using "IsManualAccountSubscribe"
+	repeated sint64 Accounts = 4;
+	//if it is needed more information on the same response
+	repeated InfoModeEnum Modes = 5;
+}
+message InfoRespMsg{
+	repeated AccountHeaderMsg AccountList = 1;
+	repeated OrderInfoMsg OrderList = 2;
+	sint64 RequestId = 3;
+	repeated PositionInfoMsg PositionList = 4;
+	repeated BracketInfoMsg BracketList = 5;
+	repeated AccountTradingSymbolInfoMsg AccountTradingSymbolList = 6;
+}
+message AccountHeaderMsg{
+	//this field should be used on various message and it also identifies the account updates sent by the server
+	sint64 accountNumber = 1;
+	//header is only for user display purpose
+	string accountHeader = 2;
+	//custom field which can be setted from the propfirm
+	string accountDescription = 3;
+	//balance of the account
+	BalanceMsg Balance = 4;
+	bool IsEnabled = 5;
+	//more detailed status compared to 'IsTradingEnabled'
+	AccountStatusEnum Status = 6;
+	bool IsTradingEnabled = 7;
+	//as default and standard usage, accounts are on netting mode (normal future broker behaviour), so it means that
+	//same account can only have one position per instrument. However on some scenario, they can also be setted to work on
+	//netting mode, so where you can have multiple and opposite positions at the same time
+	bool IsHedging = 8;
+	//GUID account reference id for Admin API
+	string AccountReferenceId = 9;
+	//trading global permission on the account, (it is not sent the user level permission)
+	AccountPermissionEnum Permission = 10;
+	//currency of the account
+	string Currency = 11;	
+	bool Archived = 12;
+	//User can edit and set an its own rule (AccountUserRiskRuleSetReqMsg) for the account
+	bool UserRiskRuleEnabled = 13;
+	//User can edit and execute a daily lockout (AccountDailyLockoutReqMsg) for the account
+	bool UserDailyLockoutEnabled = 14;
+	bool IsTradeCopierAllowed = 15;
+
+	sint64 OrganizationId = 16;
+	string OrganizationName = 17;
+
+	AccountModeEnum Mode = 18;
+	//If the account is on risk pause, this field indicates when the risk pause will be restored. It is -1 if it is not on risk pause or if the information is not available
+	sint64 RiskPauseRestoredUtcMs = 19;
+}
+//If the socket is using "IsManualAccountSubscribe", all accounts are automatically subscribe, so this message is not needed.
+message AccountSubscribeReqMsg
+{
+	sint64 RequestId = 1;
+	repeated sint64 Accounts = 2;
+}
+message AccountSubscribeRespMsg
+{
+	sint64 RequestId = 1;
+	bool Success = 2;
+	string Reason = 3;
+}
+//IMPORTANT: Each order message can contain only a filled field. It cannot have setted for exemple both "OrderInsert" and "OrderRemove". 
+//Use the list on the "ClientRequestMsg" if you want to submit multiple orders at once
+message OrderMsg
+{
+	//Insert a new order
+	OrderInsertMsg OrderInsert = 1;
+	//Remove an order
+	OrderRemoveMsg OrderRemove = 2;
+	//Modify an order
+	OrderModifyMsg OrderModify = 3;
+	//Attach or Replace a bracket/OCO strategy to a pending order.
+	BracketStrageyInsertMsg BracketStrategyInsert = 4;
+	//Modify the price of an existing bracket
+	BracketModifyMsg BracketModify = 5;
+	//Create an oco group of existing pending orders. Important: orders must not be linked to other OcoGroups/Order
+	OcoGroupCreateMsg OcoGroupCreate = 6;
+	//Remove an oco group. Important: Orders linked in this oco group are NOT removed, they are just unlinked
+	OcoGroupRemoveMsg OcoGroupRemove = 7;
+	//hedging account only - used to flat a specific position
+	PositionFlatMsg PositionFlatMsg = 8;
+	//Attach a bracket to a pending order
+	BracketInsertMsg BracketInsert = 9;
+	//Remove a bracket from a pending order
+	BracketRemoveMsg BracketRemove = 10;
+}
+enum OrderTypeEnum
+{
+	Market = 0;
+	Limit = 1;
+	Stop = 2;
+	StopLimit = 3;
+}
+enum OrderExpireEnum
+{
+	Never = 1;
+	TillDay = 2;
+}
+enum RequestSourceEnum{
+	//Backward compatibility
+	Unknown = 0;
+	//Order sourced by a manual user operation
+	Manual = 1;
+	//Order sourced by an automatic bot / trading system
+	Automatic = 2;
+	//Order sourced by a copy trading tool
+	Copy = 3;
+}
+enum OrderQuantityModeEnum 
+{
+	//Quantity defined on the order
+	Fixed = 0;	
+	//All - quantity of the order is related the open portfolio quantity
+	//Usefull if you want to put SL or TP linked to the portfolio, independently of the quantity
+	All = 1;
+	//Countervalue to buy / sell on the account currency
+	AccountCountervalue = 2;
+}
+message OrderInsertMsg
+{
+	//Contract id of the intrsument where the order should be placed
+	sint64 ContractId = 1;
+	//This id should be filled for tracking the order on realtime server updates. It has to be unique for each session
+	//Default value is -1
+	sint64 SeqClientId = 2;
+	//Quantity of the order. Use negative numbers for sell orders
+	sint64 Quantity = 3;
+	//Limit price for limit orders, Trigger Price for Stop/Stop Limit orders
+	double Price = 4;
+	//order type
+	OrderTypeEnum OrderType = 5;
+	//account number
+	sint64 AccNumber = 6;
+	//Limit execution for stop limit orders
+	double LimitPrice = 7;
+	//optional - stop and/or targets to be linked with the entry order
+	BracketStrategyParam BracketStrategy = 8;
+	//Hedging only - position which the order has to close
+	sint64 RefPositionId = 9;
+	//required field if it is possible, it helps for analysis and debug / diagnostic
+	RequestSourceEnum Source = 10;
+	//optional - usefull for stop all and take all
+	OrderQuantityModeEnum QuantityMode = 11;
+	//optional - if it is not send/set, the breakeven or trailing params are not set
+	OrderStopParamOptions StopOptions = 12;
+}
+message OrderModifyMsg
+{
+	//Contract id of the intrument where the order should be placed
+	sint64 ContractId = 1;
+	//Orgin server id. It can be retrieved from "OrderInfoMsg" message
+	sint64 OrgServerId = 2;
+	//This id should be filled for tracking the order on realtime server updates. It has to be unique for each session
+	//Default value is -1
+	sint64 NewSeqClientId = 3;
+	//All below fields are same as OrderInsertMsg
+	//If brackets orders are linked, quantity can only decrease
+	sint64 Quantity = 4;
+	double Price = 5;
+	sint64 AccNumber = 6;
+	double LimitPrice = 7;
+	//required field if it is possible, it helps for analysis and debug / diagnostic
+	RequestSourceEnum Source = 8;
+	//optional - if it is not send/set, the breakeven or trailing params are not updated
+	OrderStopParamOptions StopOptions = 9;
+	//optional - if it is not send/set, the target options are not updated
+	OrderTargetParamOptions TargetOptions = 10;
+}
+message OrderRemoveMsg
+{
+	//Orgin server id. It can be retrieved from "OrderInfoMsg" message
+	sint64 OrgServerId = 1;
+	sint64 AccNumber = 2;
+	//required field if it is possible, it helps for analysis and debug / diagnostic
+	RequestSourceEnum Source = 3;
+}
+message OrderStopParamOptions
+{
+	bool BreakevenEnable = 1;
+	double BreakevenTriggerPrice = 2;
+	PriceModeEnum BreakevenOffsetPriceMode = 3;
+	int32 BreakevenOffsetTicks = 4;
+	double BreakevenOffsetPrice = 5;
+
+	bool TrailingEnable = 6;
+	double TrailingTriggerPrice = 7;
+	PriceModeEnum TrailingOffsetPriceMode = 8;
+	int32 TrailingOffsetTicks = 9;
+	double TrailingOffsetPrice = 10;
+}
+message OrderTargetParamOptions
+{
+	bool MoveStopToBreakevenOnExecution = 1;
+	PriceModeEnum MoveStopToBreakevenOffsetPriceMode = 2;
+	int32 MoveStopToBreakevenOffsetTicks = 3;
+	double MoveStopToBreakevenOffsetPrice = 4;
+}
+message OrderStopInfoOptions
+{
+	bool BreakevenEnable = 1;
+	double BreakevenTriggerPrice = 2;
+	PriceModeEnum BreakevenOffsetPriceMode = 3;
+	int32 BreakevenOffsetTicks = 4;
+	double BreakevenOffsetPrice = 5;
+	
+	enum TrailingStatusEnum
+	{
+		Disabled = 0;
+		WaitingTrigger = 1;
+		Active = 2;
+	}
+	TrailingStatusEnum TrailingStatus = 6;
+	double TrailingTriggerPrice = 7;
+	PriceModeEnum TrailingOffsetPriceMode = 8;
+	double TrailingOffsetPrice = 9;
+	int32 TrailingOffsetTicks = 10;
+}
+message OrderTargetInfoOptions
+{
+	bool MoveStopToBreakevenOnExecution = 1;
+	int32 MoveStopToBreakevenTicksOffset = 2;
+}
+message BracketStrategyParam
+{
+	//Static means that the insert price of the order is calculated based on the insert price of the parent order, 
+	//otherwise it will be based on the exeuction price
+	enum TypeEnum
+	{
+		STOP_AND_TARGET = 0;
+		STOP_AND_TARGET_STATIC = 1;
+		STOP = 2;
+		STOP_STATIC = 3;
+		TARGET = 4;
+		TARGET_STATIC = 5;
+	}
+	TypeEnum Type = 1;
+	repeated BracketParam Stops = 2;
+	repeated BracketParam Targets = 3;
+	enum StopTrailingModeEnum{
+		None = 0;
+		Breakeven = 1;
+		Trailing = 2;
+	};
+	//obsolete - discarded and not used
+	StopTrailingModeEnum TrailingMode = 4;
+	//obsolete - discarded and not used
+	int32 TrailingTicks = 5;
+	//obsolete - discarded and not used
+	int32 TrailingMinOffsetTicks = 6;
+}
+enum PriceModeEnum
+{
+	Ticks = 0;
+	Price = 1;
+	//in this mode the price of the bracket is auto calculated based on this offset from entry order
+	PriceOffset = 2;
+	//it can only be used on trailing offset
+	Unused = 100;
+}
+message BracketParam{
+	//Must be ABS value. The side is taken based the quantity of the parent order
+	sint64 Quantity = 1;
+	PriceModeEnum PriceMode = 2;
+	//required if PriceMode = Ticks, otherwise price param is used and required
+	int32 TicksOffset = 3;
+	//required if PriceMode = Price or PriceMode = PriceOffset
+	double Price = 4;
+	//for stop bracket only, this are optional parameters for the stop move to breakeven or trailing. It is not used for target bracket
+	BracketStopOptions StopOptions = 5;
+	//for target bracket only, this are optional parameters for the stop move to breakeven. It is not used for stop bracket
+	BracketTargetOptions TargetOptions = 6;
+}
+message BracketStopOptions
+{
+	bool BreakevenEnable = 1;
+	PriceModeEnum BreakevenTriggerPriceMode = 2;
+	int32 BreakevenTriggerTicks = 3;
+	double BreakevenTriggerPrice = 4;
+	PriceModeEnum BreakevenOffsetPriceMode = 5;
+	int32 BreakevenOffsetTicks = 6;
+	double BreakevenOffsetPrice = 7;
+
+	bool TrailingEnable = 8;
+	PriceModeEnum TrailingTriggerPriceMode = 9;
+	int32 TrailingTriggerTicks = 10;
+	double TrailingTriggerPrice = 11;
+	PriceModeEnum TrailingOffsetPriceMode = 12;
+	int32 TrailingOffsetTicks = 13;
+	double TrailingOffsetPrice = 14;
+}
+message BracketTargetOptions
+{
+	bool MoveStopToBreakevenOnExecution = 1;
+	PriceModeEnum MoveStopToBreakevenOffsetPriceMode = 2;
+	int32 MoveStopToBreakevenOffsetTicks = 3;
+	double MoveStopToBreakevenOffsetPrice = 4;
+}
+message BracketStrageyInsertMsg
+{
+	sint64 RequestId = 1;
+	//Order id to which the strategy should be attached
+	sint64 ParentOrderId = 2;
+	BracketStrategyParam BracketStrategy = 3;
+	sint64 AccNumber = 4;
+	//required field if it is possible, it helps for analysis and debug / diagnostic
+	RequestSourceEnum Source = 5;
+	//if you want to replace an existing strategy already attached, set it to true
+	bool IsReplace = 6;
+}
+message BracketInsertMsg
+{
+	sint64 RequestId = 1;
+	//Parent order id of which the bracket is attached
+	sint64 ParentOrderId = 2;
+	bool IsTarget = 3;
+	BracketParam BracketParam = 4;
+	//This can be filled to track the bracket on realtime server updates. It has to be unique for each session
+	//Default value is -1
+	sint64 ClientId = 5;
+	sint64 AccNumber = 6;
+	//required field if it is possible, it helps for analysis and debug / diagnostic
+	RequestSourceEnum Source = 7;
+}
+message BracketModifyMsg
+{
+	//Parent order id of which the bracket is attached
+	sint64 ParentOrderId = 1;
+	sint64 BracketId = 2;
+	//Quantity is ingnored in this case. Quantity cannot be changed
+	BracketParam BracketParam = 3;
+	//This can be filled to track the bracket on realtime server updates. It has to be unique for each session
+	//Default value is -1
+	sint64 ClientId = 4;
+	sint64 AccNumber = 5;
+	//required field if it is possible, it helps for analysis and debug / diagnostic
+	RequestSourceEnum Source = 6;
+}
+message BracketRemoveMsg
+{
+	//Parent order id of which the bracket is attached
+	sint64 ParentOrderId = 1;
+	sint64 BracketId = 2;
+	sint64 AccNumber = 3;
+	//required field if it is possible, it helps for analysis and debug / diagnostic
+	RequestSourceEnum Source = 4;
+}
+message OcoGroupCreateMsg
+{
+	sint64 RequestId = 1;
+	sint64 AccNumber = 2;
+	enum GroupTypeEnum
+	{
+		STOPS_LIMITS = 0;
+		OPPOSITE_QTY = 1;
+	}
+	GroupTypeEnum Type = 3;
+	//Orders' id of the linked orders
+	repeated sint64 OcoLinkedOrderIds = 4;
+	enum OcoOrdersPlaceEnum{
+		//it must be populated the OcoLinkedOrderIds field
+		EXISTING = 0;
+		//it must be populated the OrderInsert field
+		INSERT = 1;
+	}
+	OcoOrdersPlaceEnum OrderPlace = 5;
+	repeated OrderInsertMsg OrderInsert = 6;
+	//required field if it is possible, it helps for analysis and debug / diagnostic
+	RequestSourceEnum Source = 7;
+}
+message OcoGroupRemoveMsg
+{
+	sint64 RequestId = 1;
+	sint64 AccNumber = 2;
+	sint64 OcoGroupId = 3;
+	//required field if it is possible, it helps for analysis and debug / diagnostic
+	RequestSourceEnum Source = 4;
+}
+//response to OcoGroupCreateMsg or OcoGroupRemoveMsg
+message OcoGroupReportMsg
+{
+	sint64 RequestId = 1;
+	bool Success = 2;
+	//if success, otherwise -1
+	sint64 OcoGroupId = 3;
+	//If success = false, here there is the reason
+	string Reason = 4;
+}
+message PositionFlatMsg
+{
+	//Position server id. It can be retrieved from "PositionInfoMsg" message
+	sint64 PositionId = 1;
+	sint64 AccNumber = 2;
+	//required field if it is possible, it helps for analysis and debug / diagnostic
+	RequestSourceEnum Source = 3;
+}
+message OrderInfoMsg
+{
+	//Contract id of the intrument where the order has been placed
+	sint64 ContractId = 1;
+	//Orgin server id. It persists for the whole lifetime of the orders
+	sint64 OrgServerId = 2;
+	//Client id setted on OrderInsertMsg with the "SeqClientId" parameter
+	sint64 OrgClientId = 3;
+	//Sequence server id. It is the same the first time, but it changes on order modify
+	int64 SeqServerId = 4;
+	//It is the same for the first status received, while it is equal to the id setted "OrderModifyMsg" with the "NewSeqClientId" parameter for order mdoify
+	sint64 SeqClientId = 5;
+	//Price of the order
+	double OrderPrice = 6;
+	//Not null only for STOP LIMIT orders. It is the stop limit price
+	double OrderLimitPrice = 7;
+	//Pending quantity of the order. Negative numbers mean that it is a sell order
+	sint64 PendingQty = 8;
+	//Filled quantity of the order. Negative numbers mean that it is a sell order
+	sint64 FilledQty = 9;
+	//Order type
+	OrderTypeEnum OrderType = 10;
+	enum OrderStateEnum
+	{
+		//Received for pending orders, modified orders, partial executed and fully executed orders
+		Submitted = 0;
+		//Order has been removed
+		Canceled = 1;
+		//An error occurs with the order. It is it received, it means that the order is not pending anymore
+		Error = 2;
+		//An error occur on the modify of the order. The order IS STILL pending at the old price and old quantities
+		ErrorModify = 3;
+		PendingRequest = 100;
+		PendingModify = 101;
+		PendingCancel = 102;
+	}
+	OrderStateEnum OrderState = 11;
+	//average price of last executed filled quantity
+	double AvgPrice = 12;
+	enum SnapTypeEnum{
+		//Snapshot status of the order. Filled quantity in this case must not be included/added on the portfolio. Look the example for better clarity
+		Historical = 1;
+		//Realtime update
+		RealTime = 2;
+		//Portfolio snapshot
+		HistPos = 3;
+	}
+	SnapTypeEnum SnapType = 13;
+	//Account number
+	sint64 AccNumber = 14;
+	//It is setted for "Error" or "ErrorModify" status. It describes the reason of the error
+	string Reason = 15;
+	string FeedSymbol = 16;
+	//Not used in this scenario
+	string Isin = 17;
+	/*********OCO AREA, otherwise -1 for all this values******/
+	//Oco Group Id. Multiple order can have the same Oco Group Id. It can be usefull for get the linked orders
+	sint64 OcoLinkedGroupId = 18;
+	//Linked order to this order. It means for example that if this order is removed, every linked order is removed too
+	repeated sint64 OcoLinkedOrderIds = 19;
+	// The parent order from where this order has been generated
+	sint64 OcoParentOrderId = 20;
+	//Hedging only - order which the position is linked to (close order), othwerwise -1
+	sint64 PositionLinkId = 21;
+	bool IsGeneratedFromBracket = 22;
+	/**********************************************************/
+	//optional - usefull for stop all and take all
+	OrderQuantityModeEnum QuantityMode = 23;
+	//UNIX milliseconds
+	sint64 InsertUtc = 24;
+	//UNIX milliseconds
+	sint64 ExeuctionUtc = 25;
+	//ip of the order used for submission
+	string Ip = 26;
+	//information about the source of the order (platform for example)
+	string Source = 27;
+	OrderStopInfoOptions StopOptions = 28;
+	OrderTargetInfoOptions TargetOptions = 29;
+	//for stop / stop limit orders only, it indicates if the stop has been triggered and it is now active order
+	bool IsStopTriggered = 30;
+    /***********************RESERVED FIELDS**************************/
+    sint64 OrgClientSessionId = 100;
+    sint64 SeqClientSessionId = 101;
+	bool IsValidationError = 102;
+
+	sint64 MessageTimestamp = 103;
+}
+message BracketInfoMsg
+{
+	//Contract id of the intrument where the order has been placed
+	sint64 ContractId = 1;
+	//Server order id of the order where this bracket is attached
+	sint64 ParentOrderId = 2;
+	//Multiple stops and/or targets have the same value. Usefull for rebuild linked brackets
+	sint64 OcoGroupId = 3;
+	//Bracket id. It persists for the whole lifetime of the bracket
+	sint64 BracketId = 4;
+	//It is the same for the first status received, while it is equal to the id setted "OrderModifyMsg" with the "NewSeqClientId" parameter for order mdoify
+	sint64 SeqClientId = 5;
+	//Price of the order
+	double Price = 6;
+	//-1 if not used
+	sint32 Ticks = 7;
+	double CalculatedPrice = 8;
+	//Total original quantity of the bracket. Negative numbers mean that it is a sell bracket
+	sint64 TotalQty = 9;
+	//Resting quantity of the bracket. Negative numbers mean that it is a sell bracket
+	sint64 ReleasedQty = 10;
+	bool IsTarget = 11;
+	enum BracketStateEnum
+	{
+		//Bracket is waiting to be converted to an order
+		Waiting = 0;
+		//Bracket has been fully converted to an order. Rest quantity is always 0 in this case
+		Submitted = 1;
+		//Bracket has been removed. It means that the parent order has been cancelled
+		Cancelled = 2;
+		//Error. The modify requested for the broker has not been successfull
+		Error = 3;
+
+		//Bracket is pending (it means that parent order has not been submitted yet)
+		Pending = 100;
+	}
+	BracketStateEnum BracketState = 12;
+	enum SnapTypeEnum{
+
+		//Snapshot status of the order. Filled quantity in this case must not be included/added on the portfolio. Look the example for better clarity
+		Historical = 1;
+		//Realtime update
+		RealTime = 2;
+	}
+	SnapTypeEnum SnapType = 13;
+	//Account number
+	sint64 AccNumber = 14;
+	//It is setted for "Error" status. It describes the reason of the error
+	string Reason = 15;
+	string FeedSymbol = 16;
+	//Not used in this scenario
+	string Isin = 17;
+	BracketStopOptions StopOptions = 18;
+	BracketTargetOptions TargetOptions = 19;
+	/***********************RESERVED FIELDS**************************/
+	sint64 ClientSessionId = 101;
+	bool IsValidationError = 102;
+}
+message LogInfoMsg
+{
+	string Msg = 1;
+	//it could be -1 if it is a generic message and it is not related to any account
+	sint64 AccNumber = 2;
+}
+//
+message PositionInfoMsg{
+	//Contract id of the intrument where the order has been placed
+	sint64 ContractId = 1;
+	sint64 OpenQuantity = 2;
+	double OpenPrice = 3;
+	double MarginUsed = 4;
+	bool HasOpenPl = 8;
+	double OpenPl = 9;
+	enum SnapTypeEnum{
+		Historical = 1;
+		RealTime = 2;
+	}
+	SnapTypeEnum SnapType = 11;
+	//Account number
+	sint64 AccNumber = 12;
+	string FeedSymbol = 13;
+	//Not used in this scenario
+	string Isin = 14;
+	//UNIX milliseconds of last execution which generates the position
+	sint64 Utc = 16;
+	double ConvertedOpenPl = 19;
+	double ConvertedCommissions = 21;
+	double ConvertedSwap = 22;
+	/*********HEDGING ACCOUNT AREA, otherwise -1 for all this values******/
+	sint64 PositionId = 15;
+	sint64 EntryOrderId =  20;
+}
+//Balance update sent by the server for the user's accounts. It is sent at the begninng for a snapshot and then it is only sent when a trade is closed.
+message BalanceMsg{
+	double Balance = 1;
+	sint64 AccNumber = 2;
+	//it is always empty. It is not used for this situation
+	string Description = 3;
+	//Currently margin used by opened positions/orders
+	double MarginUsed = 4;
+	//Optional - if the challenge has a stop drawdown setted, this is the trigger balance, otherwise -1
+	double StopDrawdownOverall = 5;
+	//Optional - if the challenge has a stop intraday drawdown setted, this is the trigger balance, otherwise -1
+	double StopDrawdownIntraday = 6;
+	//Optional - if the challenge has a profit target, this is the trigger balance, otherwise -1
+	double ProfitTarget = 7;
+	//Margin available
+	double MarginAvailable = 8;
+	//Optional - if the challenge has a stop weekly drawdown setted, this is the trigger balance, otherwise -1
+	double StopDrawdownWeekly = 9;
+
+	double Equity = 10;
+	double DailyPl = 11;
+	double DailyNetPl = 12;
+
+	//this field is not updated on message triggered by equity / open pnl update.
+	BalanceDetailedMsg Details = 13;
+}
+message BalanceDetailedMsg
+{
+	//if there is no any risk param associated, this field is true, so it can be ingored the other fields.
+	bool Empty = 1;
+	//Optional - if the challenge has a stop drawdown setted, this is the trigger balance, otherwise -1
+	double StopDrawdownOverallValue = 2;
+	//Optional - if the challenge has a stop intraday drawdown setted, this is the trigger balance, otherwise -1
+	double StopDrawdownIntradayValue = 3;
+	//Optional - if the challenge has a profit target, this is the trigger balance, otherwise -1
+	double ProfitTargetValue = 4;
+	//Optional - if the challenge has a stop weekly drawdown setted, this is the trigger balance, otherwise -1
+	double StopDrawdownWeeklyValue = 5;
+
+	double UserDrawdownDailyBalance = 6;
+	double UserDrawdownWeeklyBalance = 7;
+	double UserTrailingLossBalance = 17;
+	double UserProfitDailyBalance = 8;
+	double UserProfitWeeklyBalance = 9;
+
+	double UserDrawdownDailyValue = 10;
+	double UserDrawdownWeeklyValue = 11;
+	double UserTrailingLossValue = 18;
+	double UserProfitDailyValue = 12;
+	double UserProfitWeeklyValue = 13;
+
+	sint32 SessionsNumber = 14;
+	sint32 SessionsNumberTarget = 15;
+
+	double StartBalance = 16;
+	//Optional - it is setted if the account has/had a commissions voucher, otherwise -1
+	double CommissionsRemainingBonus = 19;
+}
+message SymbolLookupReqMsg{
+	sint64 RequestId = 1;
+	//optional - may be also null
+	string Filter = 2;
+}
+message SymbolLookupRespMsg{
+	sint64 RequestId = 1;
+	repeated SymbolLookupInfo Symbols = 2;
+}
+message SymbolLookupInfo{
+	string Symbol = 1;
+	string Description = 2;
+	string Exchange = 3;
+	double TickSize = 4;
+	double OrderCommission = 5;
+	SymbolCategoryEnum Category = 6;
+	string DataFeedProduct = 7;
+	sint64 ContractId = 8;
+	bool TradingInhibited = 9;
+		//default is 1. 
+	//On crypto, since the minimum tradable volume is under 1, can be different. 
+	//Example: 10 means that it is possible to buy/sell 1 / 10 of contract (0.1), 100 is 1 / 100 (0.01) and so on
+	//Furthermore, the volume of the quantity received for this contract are multiplied accorindgly and same for the order submission
+	sint32 TradableQuantityFractionable = 10;
+	//In some circustances, it can be different compared to the TradableQuantityFractionable
+	sint32 TradableQuantityMinimum = 11;
+}
+enum OrderPositionFilterEnum
+{
+	ALL = 0;
+	BUY = 1;
+	SELL = 2;
+	WINNER = 3;
+	LOOSER = 4;
+}
+message CancelFlatReqMsg
+{
+	enum ActionEnum
+	{
+		//Flat position, if any, opened
+		FLAT = 0;
+		//Cancel all orders
+		CANCEL = 1; 
+		//Cancel orders and flat positions
+		FLAT_CANCEL = 2;
+	}
+	sint64 RequestId = 1;
+	sint64 AccNumber = 2;
+	//if empty, it means that the action is taken on all the contracts for the account
+	repeated sint64 ContractsId = 3;
+	ActionEnum Action = 4;
+	//required field if it is possible, it helps for analysis and debug / diagnostic
+	RequestSourceEnum Source = 5;
+	OrderPositionFilterEnum Filter = 6;
+	bool CancelExcludeOco = 7;
+}
+message CancelFlatRespMsg
+{
+	sint64 RequestId = 1;
+	sint64 AccNumber = 2;
+	//if empty, all request has been correclty executed
+	repeated CancelFlatErrorDetail Errors = 3;
+	repeated CancelFlatItemDetail Items = 4;
+}
+message CancelFlatItemDetail
+{
+	bool IsPosition = 1;
+	string FeedSymbol = 2;
+	sint64 ContractId = 3;
+	/*************POSITION**************/
+	//if it is not on hedging, it is setted -1
+	sint64 PositionId = 4;
+	/**************ORDER****************/
+	sint64 OrderId = 5;
+}
+message CancelFlatErrorDetail
+{
+	sint64 ContractId = 1;
+	string Error = 2;
+}
+message CancelReverseReqMsg
+{
+	enum ActionEnum
+	{
+		//Reverse position, if any, opened
+		REVERSE = 0;
+		//Cancel all orders
+		CANCEL = 1; 
+		//Cancel orders and reverse position
+		REVERSE_CANCEL = 2;
+	}
+	sint64 RequestId = 1;
+	sint64 AccNumber = 2;
+	sint64 ContractId = 3;
+	ActionEnum Action = 4;
+	//required field if it is possible, it helps for analysis and debug / diagnostic
+	RequestSourceEnum Source = 5;
+}
+message CancelReverseRespMsg
+{
+	sint64 RequestId = 1;
+	bool Success = 2;
+	string Error = 3;
+}
+message BracketInsertReportMsg
+{
+	//Request id sent to the server from client
+	sint64 RequestId = 1;
+	bool Success = 2;
+	//If success = false, here there is the reason
+	string Reason = 3;
+}
+enum EntityActionEnum
+{
+	SNAPSHOT = 0;
+    //New account has been created
+    ADD = 1;
+    //account status update
+    UPDATE = 2; 
+    //Account has been removed
+    REMOVE = 3;
+}
+message AccountStatusUpdateMsg
+{
+	sint64 AccountId = 1;
+	EntityActionEnum Action = 2;
+	AccountHeaderMsg Info = 3;
+}
+message FillReportMsg
+{
+	sint64 AccountId = 1;
+	sint64 FillId = 2;
+	sint64 ContractId = 3;
+	string FeedSymbol = 4;
+	//UNIX milliseconds
+	sint64 Utc = 5;
+	double Price = 6;
+	sint64 Quantity = 7;
+	double Commissions = 8;
+	sint64 SourceOrderId = 9;
+	string SourceOrderIp = 10;
+}
+message TradeReportMsg
+{
+	enum Flag
+	{
+		SCALP = 1;
+		CLOSED_TOO_CLOSE_TO_ENTRY = 2;
+		TRADING_NEWS = 3;
+		RISK_LIQ_HARD = 4;
+		RISK_LIQ_SOFT = 5;
+		RISK_LIQ_FLAT = 6;
+		RISK_MAX_POS_LOSS = 7;
+		RISK_MAX_PORT_LOSS = 8;
+		RISK_MAX_POS_GAIN = 9;
+		RISK_MAX_PORT_GAIN = 10;
+		RISK_MAX_MARGIN = 11;
+		TRADING_HOURS = 12;
+		RISK_USER_LIQ = 13;
+		RISK_USER_LOCKOUT = 14;
+	}
+	sint64 AccountId = 1;
+	sint64 TradeId = 2;
+	sint64 ContractId = 3;
+	string FeedSymbol = 4;
+	sint64 Quantity = 5;
+	//UNIX milliseconds
+	sint64 EntryUtc = 6;
+	//UNIX milliseconds
+	sint64 ExitUtc = 7;
+	double OpenPrice = 8;
+	double ClosePrice = 9;
+	double GrossPL = 10;
+	double Commissions = 11;
+	//In some situation, the trade pnl could not be accounted due to the trading rule
+	bool Unaccounted = 12;
+	repeated Flag Flags = 13;
+	sint64 EntryOrderId = 14;
+	sint64 ExitOrderId = 15;
+	double Swap = 16;
+}
+
+message FillTradeReportMsg
+{
+	enum FillTradeTypeEnum
+	{
+		//fill to open a new position
+		OPEN = 0;
+		//fill to close an existing position
+		CLOSE = 1; 
+	}
+	FillTradeTypeEnum FillType = 1;
+	sint64 AccountId = 2;
+	sint64 PositionId = 3;
+	sint64 OrderId = 4;
+	sint64 ContractId = 5;
+	string FeedSymbol = 6;
+	sint64 Quantity = 7;
+	//UNIX milliseconds
+	sint64 EntryUtc = 8;
+	//UNIX milliseconds
+	sint64 ExitUtc = 9;
+	double OpenPrice = 10;
+	double ClosePrice = 11;
+	double ConvertedGrossPL = 12;
+	double ConvertedCommissions = 13;
+	sint64 EntryOrderId = 14;
+	//-1 if the position is still open
+	sint64 ExitOrderId = 15;
+	double ConvertedSwap = 16;
+}
+
+message UserSessionLogMsg
+{
+	string SessionId = 1;
+	string UserId = 2;
+	//UNIX milliseconds
+	sint64 StartUtc = 3;
+	//UNIX milliseconds, -1 if session is still open
+	sint64 EndUtc = 4;
+	string Ip = 5;
+	string Source = 6;
+	sint64 ClientSessionId = 7;
+}
+enum SubscribeModeEnum
+{
+	//it just request the current snapshot
+	SNAPSHOT = 0;
+	//it is sent a snapshot and it is also subscribed to the updates
+	SUBSCRIBE = 1;
+	//it is unsubscribed
+	UNSUBSCRIBE = 2;
+}
+message CurrencyRatesReqMsg
+{
+	SubscribeModeEnum Mode = 1;
+}
+message CurrencyRateInfoMsg
+{
+	string BaseCurrency = 1;
+	string QuoteCurrency = 2;
+	double Rate = 3;
+	sint64 DataBridgeId = 4;
+}
+
+enum LoginReasonsCodeEnum{
+	CREDENTIALS = 0;
+	CONCURRENT_SESSION = 1;
+	UNEXPECTED_ERROR = 2;
+}
+
+enum RiskUserLossModeEnum
+{
+	TrailingMaxBalance = 0;
+	StaticStartBalance = 1;
+	TrailingMaxEquity = 2;
+	StaticStartEquity = 3;
+	StaticMininmumStartEquityBalance = 4;
+}
+enum RiskUserReferenceEnum
+{
+	Balance = 0;
+	Equity = 1;
+}
+
+message AccountUserRiskRule
+{
+	sint64 AccountId = 4;
+	bool IsScheduled = 5;
+
+	bool SetAsDefaultForAccountTradingRule = 6;
+	bool InhibitChangesUntilNextSession = 7;
+
+	bool DailyLossLimitEnabled = 8;
+	RiskUserReferenceEnum DailyLossLimitReference = 24;
+	//-1 if it is not setted
+	double DailyLossLimitMoney = 10;
+	//-1 if it is not setted
+	double DailyLossLimitPercentage = 11;
+
+	bool TrailLossLimitEnabled = 25;
+	RiskUserReferenceEnum TrailLossLimitReference = 26;
+	//-1 if it is not setted
+	double TrailLossLimitMoney = 27;
+	//-1 if it is not setted
+	double TrailLossLimitPercentage = 28;
+	//-1 if it is not setted
+	double TrailLossLimitTriggerMoney = 29;
+	//-1 if it is not setted
+	double TrailLossLimitTriggerPercentage = 30;
+
+	bool DailyProfitLimitEnabled = 12;
+	RiskUserReferenceEnum DailyProfitLimitReference = 13;
+	//-1 if it is not setted
+	double DailyProfitLimitMoney = 14;
+	//-1 if it is not setted
+	double DailyProfitLimitPercentage = 15;
+
+	bool WeeklyLossLimitEnabled = 16;
+	RiskUserLossModeEnum WeeklyLossLimitReference = 17;
+	//-1 if it is not setted
+	double WeeklyLossLimitMoney = 18;
+	//-1 if it is not setted
+	double WeeklyLossLimitPercentage = 19;
+
+	bool WeeklyProfitLimitEnabled = 20;
+	RiskUserReferenceEnum WeeklyProfitLimitReference = 21;
+	//-1 if it is not setted
+	double WeeklyProfitLimitMoney = 22;
+	//-1 if it is not setted
+	double WeeklyProfitLimitPercentage = 23;
+}
+
+message AccountUserRiskRuleInfoReqMsg
+{
+	sint64 RequestId = 1;
+	sint64 AccountId = 2;
+}
+
+message AccountUserRiskRuleInfoRespMsg
+{
+	sint64 RequestId = 1;
+	bool Success = 2;
+	string Error = 3;
+
+	AccountUserRiskRule Rule = 4;
+}
+
+message AccountUserRiskRuleSetReqMsg
+{
+	sint64 RequestId = 1;
+	AccountUserRiskRule Rule = 2;
+}
+
+message AccountUserRiskRuleSetRespMsg
+{
+	sint64 RequestId = 1;
+	bool Success = 2;
+	repeated string Errors = 3;
+}
+message AccountDailyLockoutReqMsg
+{
+	sint64 RequestId = 1;
+	sint64 AccountId = 2;
+	//optional, if <= 0, it is paused for remaining time of the session
+	sint64 Minutes = 3;
+}
+message AccountDailyLockoutRespMsg
+{
+	sint64 RequestId = 1;
+	bool Success = 2;
+	string Error = 3;
+}
+
+enum AccountHistoricalEntityEnum
+{
+	All = 0;
+	Orders = 1;
+	Trades = 2;
+	Fills = 3;
+	FillTrades = 4;
+}
+message AccountHistoricalSessionReqMsg
+{
+	sint64 RequestId = 1;
+	//optional - if it is not setted, it means that all the accounts are requested
+	repeated sint64 AccountIds = 2;
+	//optional - if it is not setted, it means that all the entities are requested
+	AccountHistoricalEntityEnum Entity = 3;
+}
+
+message AccountHistoricalSessionRespMsg
+{
+	sint64 RequestId = 1;
+	repeated FillReportMsg Fills = 2;
+	repeated TradeReportMsg Trades = 3;
+	repeated OrderInfoMsg Orders = 4;
+	repeated FillTradeReportMsg FillTrades = 5;
+	//if true, it means that it is not returned the full respone yet
+	bool IsPartial = 6;
+}

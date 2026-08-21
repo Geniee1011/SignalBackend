@@ -1,0 +1,156 @@
+syntax="proto3";
+package PropTradingProtocol;
+
+import "PropTradingCommonProtocol.proto";
+
+//VERSION: 5.1 - 11/2025
+
+//The ONLY message that can be sent to the trading server
+message ClientRequestMsg
+{
+	//Login with the provided token
+	LoginRequestMsg LoginReq = 1;
+	//ping message to send to the server. A ping message should be sent each 45 seconds
+	PingMsg Ping = 2; 
+	//Request of account list and orders/positions snapshot
+	InfoReqMsg InfoReq  = 3;
+	//Contract id request
+	ContractReqMsg ContractReq = 4;
+	//Request of daily pl for instruments
+	repeated DailyPlReqMsg DailyPls = 5;
+	//order submission: Insert, Modify, Remove
+	repeated OrderMsg Order = 6;
+	//message sent from client to the server for logging reason - it is not used on this scenario
+	LogInfoMsg LogMsg = 7;
+	//request of available tradable symbols. It always return the front month contract and the next contract if the expirations is closer
+	SymbolLookupReqMsg SymbolLookup = 8;
+	//request for cancel orders or flat a positions for a specific contract or all account
+	CancelFlatReqMsg CancelFlatReq = 9;
+	//used only if "IsManualAccountSubscribe" = true, othwerwise all accounts are automatically subscribed. 
+	//IMPORTANT: in order to keep consistency, please request it together with InfoReqMsg
+	AccountSubscribeReqMsg AccountSubscribeReq = 10;
+	//request for cancel orders or reverse a positions for a specific contract
+	CancelReverseReqMsg CancelReverseReq = 11;
+	//request for currency rates - usefull on FX / Crypto to calculate the PnL
+	CurrencyRatesReqMsg CurrenyRatesReq = 12;
+	//request for symbol trading info (spread, margin, commissions) for a specific account and symbol
+	AccountTradingSymbolInfoReqMsg AccountTradingSymbolInfoReq = 13;
+	//if available, it returns the user risk rule for the account
+	AccountUserRiskRuleInfoReqMsg AccountUserRiskRuleInfoReq = 14;
+	//if available, it sets the user risk rule parameters for the account
+	AccountUserRiskRuleSetReqMsg AccountUserRiskRuleSetReq = 15;
+	//if available, it requests the daily lockout for the account
+	AccountDailyLockoutReqMsg AccountDailyLockoutReq = 16;
+	//request for historical session data (order, fills and trades)
+	AccountHistoricalSessionReqMsg AccountHistoricalSessionReq = 17;
+	//Multiple Contract ids requests
+	ContractRequestWrapperMsg ContractsReqs = 18;
+	//request for multiple symbol trading info (spread, margin, commissions) for a specific account
+	AccountTradingSymbolMultiReqMsg AccountTradingSymbolMultiReq = 19;
+}
+//Message received by the server
+message ServerResponseMsg
+{
+	//Login response
+	LoginResponseMsg LoginMsg = 1;
+	//Pong response to Ping msg. The PONG should be received within about 5 seconds
+	PongMsg Pong = 2;
+	//Response to snapshot request
+	InfoRespMsg InfoMsg = 3;
+	//updates for accounts' balance
+	repeated BalanceMsg BalanceInfo = 4;
+	//response for contract request
+	ContractRespMsg ContractMsg = 5;
+	//response for daily pl requested or it is sent for daily pl snapshot on OrdAndPos info request msg
+	repeated DailyPlRespMsg DailyPls = 6;
+	//realtime update for orders' status
+	repeated OrderInfoMsg OrderInfo = 7;
+	//server close for current session
+	LoggedOffMsg LoggedOff = 8;
+	//message from server that should be shown to the user
+	LogInfoMsg LogMsg = 9;
+	//response to symbol lookup request
+	SymbolLookupRespMsg SymbolLookup = 10;
+	//realtime update for portfolios for netting or positions for hedging accounts
+	repeated PositionInfoMsg PositionInfos = 11;
+	//response to CancelFlatReq
+	CancelFlatRespMsg CancelFlatMsg = 12;
+	//realtime update for brackets' status
+	repeated BracketInfoMsg BracketInfo = 13;
+	//response to BracketInsert Request
+	BracketInsertReportMsg BracketStrategyInsertReport = 14;
+	//response to Account subscribe request
+	AccountSubscribeRespMsg AccountSubscribeResp = 15;
+	//realtime updates on new accounts or status changed
+	repeated AccountStatusUpdateMsg AccountStatusUpdates = 16;
+	//response to OcoGroupCreateMsg or OcoGroupRemoveMsg
+	OcoGroupReportMsg OcoGroupReport = 17;
+	//it should be used only report/metrics
+	repeated FillReportMsg FillReports = 18;
+	//it should be used only report/metrics
+	repeated TradeReportMsg TradeReports = 19;
+	//it should be used only report/metrics
+	repeated FillTradeReportMsg FillTradeReports = 20;
+	//response to CancelReverseReqMsg
+	CancelReverseRespMsg CancelReverseMsg = 21;
+	//system user - notification of new user session
+	repeated UserSessionLogMsg UserSessionLogs = 22;
+	//realtime update for account trading symbol info
+	repeated AccountTradingSymbolInfoMsg AccountTradingSymbolInfoUpdate = 23;
+	//response to currency rates request and updates if subscribed
+	repeated CurrencyRateInfoMsg CurrencyRates = 24;
+	//response to AccountTradingSymbolInfoReq
+	AccountTradingSymbolInfoRespMsg AccountTradingSymbolInfoResp = 25;
+	//response to AccountUserRiskRuleInfoReq
+	AccountUserRiskRuleInfoRespMsg AccountUserRiskRuleInfoResp = 26;
+	//response to AccountUserRiskRuleSetReq
+	AccountUserRiskRuleSetRespMsg AccountUserRiskRuleSetResp = 27;
+	//response to AccountDailyLockoutReq
+	AccountDailyLockoutRespMsg AccountDailyLockoutResp = 28;
+	//response to AccountHistoricalSessionReq
+	AccountHistoricalSessionRespMsg AccountHistoricalSessionResp = 29;
+	//response to ContractsReqs or it could send a snapshot/update for symbol list on use (like with positions or orders opened)
+	ContractResponseWrapperMsg ContractsResps = 30;
+	//response to AccountTradingSymbolMultiReqMsg
+	AccountTradingSymbolMultiRespMsg AccountTradingSymbolMultiResp = 31;
+}
+enum AccountSubscriptionModeEnum
+{
+	//we just keep this for backward compatibility
+	Undefined = 0;
+	//all accounts must be manually subcribed to be received through the InfoReqMsg
+	Manual = 1;
+	//accounts must to be subscribed through the InfoReqMsg, but it is not necessary 
+	//to specify the list of the accounts, since all user's accounts are automatically returned and subscribed
+	Existing = 2;
+	//as above, but it is also sent the new accounts of the user through AccountStatusUpdateMsg.
+	//This mode must be used in order to show new accounts on the terminal without the need of a new login / restart
+	ExistingAndNew = 3;
+}
+message LoginRequestMsg
+{
+	//token retrieved from auth post request
+	string Token = 1;
+	//it is not used for this scenario
+	string OtpCode = 2;
+	//default is false. It is used on system connection for selective accounts load/subscribe
+	//(obsolete) - use AccountSubscriptionMode instead
+	bool IsManualAccountSubscribe = 3;
+	//default is false, so if there is a concurrent session, it is dropped
+	bool KeepConcurrentSessionOn = 4;
+	AccountSubscriptionModeEnum AccountSubscriptionMode = 5;
+}
+message	LoginResponseMsg
+{
+	bool Success = 1;
+	//Empty if success = true
+	string Reason = 2;
+	LoginReasonsCodeEnum ReasonCode = 3;
+	sint64 Version = 4;
+	bool IsCorrectVersion = 5;
+}
+message LoggedOffMsg
+{
+	//Reason why the session has been closed. E.g.: concurrent session opened
+	string Reason = 1;
+}

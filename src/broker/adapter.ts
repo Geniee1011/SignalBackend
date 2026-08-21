@@ -42,6 +42,23 @@ export interface OrderIntent {
   conviction: number;
 }
 
+/**
+ * The exit of a copied signal — "this signal is over, get out of it".
+ *
+ * Carries the ENTRY's own values, not a fresh trade's: an adapter FLATTENS this
+ * position. It must never send an opposite-side order, which on an already-flat
+ * account opens a brand-new reversed position instead of closing anything.
+ */
+export interface CloseIntent {
+  signalId: string;
+  userId: string;
+  /** The symbol the ENTRY was placed in — already the risk-sized (usually micro) root. */
+  symbol: string;
+  /** The ENTRY's side. Informational: the adapter flattens, it does not trade this. */
+  side: "LONG" | "SHORT";
+  quantity: number;
+}
+
 export interface PlaceResult {
   ok: boolean;
   /** Broker's id when it placed immediately; null for queued (pull-mode) orders. */
@@ -65,6 +82,22 @@ export interface BrokerAdapter {
    */
   isReady(userId: string): Promise<boolean>;
   placeOrder(intent: OrderIntent): Promise<PlaceResult>;
+  /**
+   * PUSH adapters only: actually send the exit.
+   *
+   * ABSENT means PULL semantics — the engine records the CLOSE and the
+   * subscriber's terminal collects it, which is why this is optional rather than
+   * a no-op every pull adapter has to implement. Defining it flips the engine
+   * from "record the close" to "record AND send the close".
+   *
+   * Returning ok=false is RETRYABLE: the close stays QUEUED and the next tick
+   * tries again. That is the opposite of placeOrder's failure handling, and
+   * deliberately so — a missed entry is a missed opportunity, but a missed exit
+   * leaves a real position open after the trader is already out of it. The risk
+   * of retrying is nil because flattening an already-flat account is a no-op,
+   * whereas the risk of giving up is an unbounded live position.
+   */
+  closeOrder?(close: CloseIntent): Promise<PlaceResult>;
 }
 
 /**

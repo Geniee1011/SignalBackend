@@ -77,6 +77,13 @@ export interface NewUserInput {
   passwordToSet?: string;
   userType?: UserType;
   systemAccess?: SystemAccess;
+  /**
+   * Undocumented in the PDF, present in the live Swagger. Believed to bypass the
+   * web dashboard's "choose your trading platform" step — the setting that makes
+   * OrderInsert return NO response at all for a user who has never picked one.
+   * See system-credential.smoke.ts --fix-platform.
+   */
+  overrideWebPlatform?: boolean;
 }
 
 /** POST /api/Propsite/CreateTradingAccount. */

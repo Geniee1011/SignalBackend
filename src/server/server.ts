@@ -7,6 +7,7 @@ import { getLink, connect as connectBroker, disconnect as disconnectBroker } fro
 import { brokerCryptoReady } from "../broker/crypto.js";
 import { getCopySettings, updateCopySettings, sanitizeCopySettings } from "../broker/copy-settings.js";
 import { getBaseRisk, setBaseRisk } from "../broker/risk-config.js";
+import { handleDxFeedWebhook } from "../dxfeed/webhook.js";
 import { collect, acknowledge, recentOrders } from "../broker/queue.js";
 import { getPerformance } from "../signals/performance.js";
 import {
@@ -271,6 +272,14 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!payload) return json(res, 401, { error: "unauthorized" });
     await disconnectBroker(payload.sub);
     return json(res, 200, { ok: true });
+  }
+
+  // --- dxFeed webhook (dxFeed → us; authenticated by the x-api-key header) ---
+  if (path === "/api/dxfeed/webhook" && req.method === "POST") {
+    const key = req.headers["x-api-key"];
+    const body = await readJson<unknown>(req);
+    const r = await handleDxFeedWebhook(Array.isArray(key) ? key[0] : key, body);
+    return json(res, r.status, { ok: r.status === 200, note: r.note });
   }
 
   // --- auto-copy settings ---

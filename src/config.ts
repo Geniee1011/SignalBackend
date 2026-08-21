@@ -50,6 +50,29 @@ export const config = {
     /** 0 = production, 1 = staging. Sent on the trading-token/auth requests. */
     environment: num("DXFEED_ENVIRONMENT", 1),
 
+    /** Admin Trading API (WSS/protobuf) — order execution. */
+    trading: {
+      /** Auth endpoint that mints the WSS token. The C# example uses /api/auth/token
+       *  (the v4 PDF says /api/v2/…) — configurable in case staging differs. */
+      authUrl: process.env.DXFEED_TRADING_AUTH_URL?.trim()
+        || "https://authdxfeed.volumetricatrading.com/api/auth/token",
+      /** Platform key sent as the `PltfKey` header on the auth request. */
+      pltfKey: process.env.DXFEED_PLTF_KEY?.trim() ?? "",
+      /** The fullTrading SYSTEM credential (created in the dashboard) — one session
+       *  places orders across every account. */
+      systemLogin: process.env.DXFEED_SYSTEM_LOGIN?.trim() ?? "",
+      systemPassword: process.env.DXFEED_SYSTEM_PASSWORD?.trim() ?? "",
+      /**
+       * Trading API version, sent as `version` on the auth body. REQUIRED —
+       * omitting it is rejected with 401 "Your platform is obsolete", which
+       * reads like a credential failure but isn't (confirmed vs staging
+       * 2026-08-18). 5 matches the v5.1 protos we generate the codec from; the
+       * C# example still defaults to 3, and the server accepts either, so this
+       * must track the PROTOS rather than the example.
+       */
+      apiVersion: num("DXFEED_TRADING_API_VERSION", 5),
+    },
+
     /** Defaults applied when provisioning a subscriber's dxFeed account. */
     provisioning: {
       /** Starting balance for a new evaluation account. */
@@ -67,8 +90,14 @@ export const config = {
   },
 } as const;
 
-/** dxFeed is usable only once an API key is configured. */
+/** dxFeed provisioning/REST is usable only once an API key is configured. */
 export const dxfeedReady = config.dxfeed.apiKey.length > 0;
+
+/** dxFeed order EXECUTION is usable only once the trading credentials are set. */
+export const dxfeedTradingReady =
+  config.dxfeed.trading.pltfKey.length > 0 &&
+  config.dxfeed.trading.systemLogin.length > 0 &&
+  config.dxfeed.trading.systemPassword.length > 0;
 
 if (config.jwt.secret === "dev-insecure-signal-secret-change-me") {
   console.warn("[auth] JWT_SECRET not set — using an insecure dev secret. Set JWT_SECRET in production.");

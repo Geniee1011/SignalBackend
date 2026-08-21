@@ -3,7 +3,7 @@ import { config } from "../config.js";
 import { getActiveSignals, type Signal } from "../signals/source.js";
 import { applyAccess, getUserAccess, type AccessConfig } from "../access/access.js";
 import { listCopyUsers, type CopySettings } from "./copy-settings.js";
-import { toIntent, type BrokerAdapter, type OrderIntent } from "./adapter.js";
+import { toIntent, type BrokerAdapter, type CloseIntent, type OrderIntent } from "./adapter.js";
 import { sizeByRisk } from "./sizing.js";
 import { getBaseRisk, riskForConviction, DEFAULT_BASE_RISK } from "./risk-config.js";
 import { isAllocated } from "./allocation.js";
@@ -156,14 +156,19 @@ async function claim(intent: OrderIntent, adapter: string): Promise<string | nul
  *                      trade that has already finished
  *   partially filled-> cancel the remainder AND flatten what did fill
  *
- * Keeping that decision in the terminal is deliberate: only it knows the fill
- * state. Splitting this into separate CLOSE and CANCEL instructions here would
- * mean guessing that state from a distance and racing the broker.
+ * Keeping that decision at the far end is deliberate: only whoever holds the
+ * position knows the fill state. On PULL that's the terminal; on PUSH it's the
+ * broker's own cancel-and-flatten. Splitting this into separate CLOSE and CANCEL
+ * instructions here would mean guessing that state from a distance and racing it.
  *
  * Idempotency comes from UNIQUE(userId, signalId, kind): exactly one CLOSE per
  * entry can ever exist, however many ticks race here.
+ *
+ * On a PUSH adapter the row is only the first half — sendPendingCloses() then
+ * delivers it. The row is still written first so a crash between the two leaves
+ * a durable "this must be closed" record that the next tick picks up.
  */
-export async function queueCloses(openSignalIds: Set<string>, adapter: string): Promise<CopyDecision[]> {
+export async function queueCloses(openSignalIds: Set<string>, adapter: BrokerAdapter): Promise<CopyDecision[]> {
   const { rows } = await getPool().query(
     `SELECT "id","userId","signalId","symbol","side","quantity","conviction"
      FROM "signal"."CopyOrder" e
@@ -193,11 +198,86 @@ export async function queueCloses(openSignalIds: Set<string>, adapter: string): 
        VALUES ($1,$2,'CLOSE',$3,$4,$5,'QUEUED',$6,$7,now(),now())
        ON CONFLICT ("userId","signalId","kind") DO NOTHING
        RETURNING "id"`,
-      [r.userId, signalId, r.symbol, r.side, Number(r.quantity), adapter, r.conviction],
+      [r.userId, signalId, r.symbol, r.side, Number(r.quantity), adapter.name, r.conviction],
     );
     if (ins[0]) out.push({ userId: r.userId as string, signalId, status: "QUEUED", reason: "close mirrored" });
   }
+
+  // PULL stops here — the terminal collects the QUEUED row. PUSH has to send it.
+  if (adapter.closeOrder) out.push(...(await sendPendingCloses(adapter)));
   return out;
+}
+
+/**
+ * Deliver every close this adapter still owes (PUSH adapters only).
+ *
+ * A CLOSE row in QUEUED means "recorded but not yet sent", so this sweeps the
+ * backlog rather than just the closes queued on this tick — that is what makes a
+ * send failure, a dropped socket, or a restart mid-sweep recoverable: the row
+ * stays QUEUED and the next tick retries it. Retrying is safe because flattening
+ * an already-flat account is a no-op, so a duplicate send cannot open anything.
+ *
+ * The failure direction is inverted from entries on purpose. Everywhere else the
+ * engine under-trades when uncertain; here, giving up leaves a live position the
+ * trader has already exited, so an uncertain close is retried indefinitely rather
+ * than retired. A close that keeps failing stays visible as QUEUED (never PLACED)
+ * with the broker's own error in `reason`.
+ */
+async function sendPendingCloses(adapter: BrokerAdapter): Promise<CopyDecision[]> {
+  const { rows } = await getPool().query(
+    `SELECT "id","userId","signalId","symbol","side","quantity"
+     FROM "signal"."CopyOrder"
+     WHERE "kind" = 'CLOSE' AND "status" = 'QUEUED' AND "adapter" = $1
+     ORDER BY "createdAt"`,
+    [adapter.name],
+  );
+
+  const out: CopyDecision[] = [];
+  const failures: string[] = [];
+
+  for (const r of rows) {
+    const userId = r.userId as string;
+    const signalId = r.signalId as string;
+    const close: CloseIntent = {
+      signalId,
+      userId,
+      symbol: r.symbol as string,
+      side: r.side as "LONG" | "SHORT",
+      quantity: Number(r.quantity),
+    };
+
+    let error: string;
+    try {
+      const res = await adapter.closeOrder!(close);
+      if (res.ok) {
+        await finalize(r.id as string, "PLACED", res.brokerOrderId ?? null);
+        out.push({ userId, signalId, status: "PLACED", reason: "close sent" });
+        continue;
+      }
+      error = res.error ?? "broker rejected the close";
+    } catch (err) {
+      // One user's broken account must not strand every other subscriber's exit.
+      error = (err as Error).message;
+    }
+
+    // Status stays QUEUED — this is a retry, not a resolution.
+    await noteRetry(r.id as string, error);
+    out.push({ userId, signalId, status: "QUEUED", reason: `close retrying: ${error}` });
+    failures.push(error);
+  }
+
+  if (failures.length > 0) {
+    console.warn(`[copy] ${failures.length} close(s) still unsent, will retry — ${failures[0]}`);
+  }
+  return out;
+}
+
+/** Record why a close hasn't gone out yet, WITHOUT retiring it. */
+async function noteRetry(id: string, reason: string): Promise<void> {
+  await getPool().query(
+    `UPDATE "signal"."CopyOrder" SET "reason" = $2, "updatedAt" = now() WHERE "id" = $1`,
+    [id, reason.slice(0, 500)],
+  );
 }
 
 async function finalize(
@@ -356,7 +436,7 @@ export async function runOnce(adapter: BrokerAdapter): Promise<CopyDecision[]> {
   // early on an empty list (as this did) is what would strand a subscriber in a
   // position after the trader went flat.
   try {
-    out.push(...(await queueCloses(new Set(real.map((s) => s.id)), adapter.name)));
+    out.push(...(await queueCloses(new Set(real.map((s) => s.id)), adapter)));
   } catch (err) {
     console.warn("[copy] close sweep failed:", (err as Error).message);
   }

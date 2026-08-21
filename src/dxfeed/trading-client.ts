@@ -1,20 +1,27 @@
 /* The execution seam for the dxFeed Admin Trading API (WebSocket + Protobuf).
  *
- * This interface is defined NOW so the DxFeedAdapter is fully wired and only the
- * Protobuf transport drops in behind it (Part B). Building the concrete client
- * needs the `.proto` message definitions from dxFeed — until they arrive,
- * `getTradingClient()` returns null and the adapter reports execution as
- * unavailable (a clean skip, never a bad order).
+ * The interface is what the DxFeedAdapter is written against; the concrete
+ * transport (DxFeedTradingClient in trading-ws.ts) is injected at startup by
+ * selectExecutionAdapter(). Keeping them apart is what lets the adapter and the
+ * copy engine be tested with no socket, and what kept the adapter finished while
+ * the Protobuf transport was still missing.
  *
- * Part B implements `DxTradingClient` over the WSS (login with a fullTrading
- * system credential, insert order + brackets, flatten) and injects it via
- * `setTradingClient()` at startup. Nothing above this seam changes when it lands. */
+ * `getTradingClient()` returns null when execution isn't configured at all
+ * (EXECUTION_ADAPTER != dxfeed, or the trading credentials are unset), and the
+ * adapter reports that as unavailable — a clean skip, never a bad order. */
 
 export interface DxEntryOrder {
-  /** dxFeed trading account the order lands on (from the subscriber's link). */
+  /** Our dxFeed account UUID (dxAccountId) — mapped to the numeric accountNumber
+   *  the trading API uses via AccountReferenceId at session time. */
   accountId: string;
-  /** dxFeed instrument id (from symbols.ts). */
-  symbolId: number;
+  /**
+   * OUR root symbol, e.g. "MES" — already the risk-sized (usually micro) root.
+   *
+   * Deliberately NOT a dated feed symbol like "/MESU26:XCME": the session's own
+   * symbol table resolves the root to whatever contract is front month right now,
+   * so nothing above this seam has to track roll calendars.
+   */
+  symbol: string;
   /** Signal side — already inverted to the counter-side by the copy engine. */
   side: "LONG" | "SHORT";
   quantity: number;
@@ -22,6 +29,8 @@ export interface DxEntryOrder {
   limitPrice: number;
   stopLoss: number | null;
   takeProfit: number | null;
+  /** Defaults to LIMIT — the copy engine always works the signal's price. */
+  orderType?: "LIMIT" | "MARKET";
 }
 
 export interface DxTradingClient {
@@ -29,8 +38,8 @@ export interface DxTradingClient {
   isConnected(): boolean;
   /** Place a bracketed limit entry. Resolves with the broker's order id. */
   placeEntry(order: DxEntryOrder): Promise<{ brokerOrderId: string }>;
-  /** Flatten any open position (and cancel a still-resting entry) for a contract. */
-  flatten(accountId: string, symbolId: number): Promise<void>;
+  /** Flatten any open position (and cancel a still-resting entry) for a root symbol. */
+  flatten(accountId: string, symbol: string): Promise<void>;
 }
 
 let client: DxTradingClient | null = null;

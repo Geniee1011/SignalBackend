@@ -6,6 +6,7 @@ import { processUser, queueCloses } from "./copy-engine.js";
 import { PullAdapter } from "./adapters/pull.js";
 import { collect, acknowledge } from "./queue.js";
 import { DEFAULT_COPY, type CopySettings } from "./copy-settings.js";
+import type { BrokerAdapter, CloseIntent, PlaceResult } from "./adapter.js";
 import type { Signal } from "../signals/source.js";
 
 let passed = 0, failed = 0;
@@ -26,7 +27,30 @@ const signal = (id: string, over: Partial<Signal> = {}): Signal => ({
 const settings = (over: Partial<CopySettings> = {}): CopySettings => ({ ...DEFAULT_COPY, mode: "auto", ...over });
 
 /** Sweep with the given signal ids still open (default: none — trader went flat). */
-const sweepCloses = (stillOpen: string[] = []) => queueCloses(new Set(stillOpen), "atas");
+const sweepCloses = (stillOpen: string[] = []) => queueCloses(new Set(stillOpen), new PullAdapter("atas"));
+
+/**
+ * A PUSH adapter (the shape dxFeed takes): it SENDS closes rather than leaving
+ * them for a terminal to collect. Stands in for DxFeedTradingClient so the
+ * engine's send/retry logic is testable without a socket or a broker.
+ */
+class FakePushAdapter implements BrokerAdapter {
+  readonly name = "push-test";
+  readonly closes: CloseIntent[] = [];
+  /** Set to make closeOrder report a business failure (retryable). */
+  fail: string | null = null;
+  /** Set to make the NEXT closeOrder throw (a dropped socket, not a rejection). */
+  throwNext = false;
+
+  async isReady(): Promise<boolean> { return true; }
+  async placeOrder(): Promise<PlaceResult> { return { ok: true, brokerOrderId: "push-1" }; }
+  async closeOrder(close: CloseIntent): Promise<PlaceResult> {
+    this.closes.push(close);
+    if (this.throwNext) { this.throwNext = false; throw new Error("socket dropped mid-send"); }
+    if (this.fail) return { ok: false, error: this.fail };
+    return { ok: true, brokerOrderId: null };
+  }
+}
 
 async function main(): Promise<void> {
   const pool = getPool();
@@ -40,7 +64,7 @@ async function main(): Promise<void> {
   const clear = () => pool.query(`DELETE FROM "signal"."CopyOrder" WHERE "userId" = $1`, [userId]);
   const ordersFor = async (kind: string) =>
     (await pool.query(
-      `SELECT "id","side","quantity","status","symbol" FROM "signal"."CopyOrder"
+      `SELECT "id","side","quantity","status","symbol","reason" FROM "signal"."CopyOrder"
        WHERE "userId" = $1 AND "kind" = $2 ORDER BY "createdAt"`, [userId, kind])).rows;
 
   try {
@@ -219,6 +243,104 @@ async function main(): Promise<void> {
       await acknowledge(userId, o!.id, { ok: false, skipped: true, error: "log-only mode" });
       const row = (await ordersFor("ENTRY"))[0];
       check("log-only ack records SKIPPED, not REJECTED", row?.status === "SKIPPED", row?.status);
+    }
+
+    // ======================================================================
+    // PUSH adapters (dxFeed): the engine must SEND the close, not just record it
+    // ======================================================================
+    console.log("\npush-mode closes\n");
+
+    // The gap this whole path exists to close: on a push adapter a QUEUED row is
+    // nobody's job — no terminal polls it — so the position would stay open for
+    // ever after the trader exited.
+    {
+      await clear();
+      const push = new FakePushAdapter();
+      await processUser(userId, settings(), [signal("lot:push-1")], push);
+      check("push entry is PLACED (not queued for a terminal)",
+        (await ordersFor("ENTRY"))[0]?.status === "PLACED", (await ordersFor("ENTRY"))[0]?.status);
+
+      await queueCloses(new Set(), push);
+      check("the close is SENT to the broker", push.closes.length === 1, `${push.closes.length}`);
+      check("the close carries the ENTRY's sized symbol and quantity",
+        push.closes[0]?.symbol === "MES" && push.closes[0]?.quantity === 4,
+        `${push.closes[0]?.symbol} x${push.closes[0]?.quantity}`);
+      check("a sent close is PLACED, never left QUEUED",
+        (await ordersFor("CLOSE"))[0]?.status === "PLACED", (await ordersFor("CLOSE"))[0]?.status);
+
+      // The sweep runs every tick; a close already sent must not go out twice.
+      await queueCloses(new Set(), push);
+      await queueCloses(new Set(), push);
+      check("repeated sweeps never re-send a PLACED close", push.closes.length === 1, `${push.closes.length}`);
+    }
+
+    // A failed close is the dangerous case: retiring it strands a live position.
+    {
+      await clear();
+      const push = new FakePushAdapter();
+      await processUser(userId, settings(), [signal("lot:push-retry")], push);
+
+      push.fail = "dxFeed trading session unavailable";
+      await queueCloses(new Set(), push);
+      check("a close that could not be sent stays QUEUED",
+        (await ordersFor("CLOSE"))[0]?.status === "QUEUED", (await ordersFor("CLOSE"))[0]?.status);
+      check("the broker's error is recorded on the row",
+        String((await ordersFor("CLOSE"))[0]?.reason).includes("session unavailable"),
+        String((await ordersFor("CLOSE"))[0]?.reason));
+
+      // The session recovers. The backlog must drain on the next tick WITHOUT a
+      // new signal event — nothing upstream will fire again for a signal that has
+      // already ended, so a close that only retries on new activity never retries.
+      push.fail = null;
+      await queueCloses(new Set(), push);
+      check("the next sweep retries and sends it",
+        (await ordersFor("CLOSE"))[0]?.status === "PLACED", (await ordersFor("CLOSE"))[0]?.status);
+      check("it took exactly two attempts", push.closes.length === 2, `${push.closes.length}`);
+    }
+
+    // An adapter that throws (dropped socket) must be a retry, not a lost close,
+    // and must not abort the sweep for everyone else.
+    {
+      await clear();
+      const push = new FakePushAdapter();
+      await processUser(userId, settings(), [signal("lot:push-throw-a"), signal("lot:push-throw-b")], push);
+      push.throwNext = true;
+      await queueCloses(new Set(), push);
+
+      const rows = await ordersFor("CLOSE");
+      check("a throw does not abort the rest of the sweep", push.closes.length === 2, `${push.closes.length}`);
+      check("the throwing close stays QUEUED for retry",
+        rows.filter((r) => r.status === "QUEUED").length === 1,
+        rows.map((r) => r.status).join(","));
+      check("the other subscriber's close still went out",
+        rows.filter((r) => r.status === "PLACED").length === 1,
+        rows.map((r) => r.status).join(","));
+
+      // And the stranded one drains on the following tick.
+      await queueCloses(new Set(), push);
+      check("the retry clears the backlog",
+        (await ordersFor("CLOSE")).every((r) => r.status === "PLACED"),
+        (await ordersFor("CLOSE")).map((r) => r.status).join(","));
+    }
+
+    // A push close must still respect the rules the pull path proved above.
+    {
+      await clear();
+      const push = new FakePushAdapter();
+      await processUser(userId, settings(), [signal("lot:push-open")], push);
+      await queueCloses(new Set(["lot:push-open"]), push); // still open upstream
+      check("nothing is sent while the signal is still open", push.closes.length === 0, `${push.closes.length}`);
+    }
+    {
+      await clear();
+      const push = new FakePushAdapter();
+      await processUser(userId, settings(), [signal("lot:push-rejected")], push);
+      await pool.query(
+        `UPDATE "signal"."CopyOrder" SET "status" = 'REJECTED' WHERE "userId" = $1 AND "kind" = 'ENTRY'`,
+        [userId],
+      );
+      await queueCloses(new Set(), push);
+      check("a REJECTED entry is never closed on push either", push.closes.length === 0, `${push.closes.length}`);
     }
 
     console.log(`\n${passed} passed, ${failed} failed\n`);

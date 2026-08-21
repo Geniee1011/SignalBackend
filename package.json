@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "postbuild": "node -e \"require('fs').copyFileSync('src/db/schema.sql','dist/db/schema.sql')\"",
+    "postbuild": "node -e \"const fs=require('fs');fs.copyFileSync('src/db/schema.sql','dist/db/schema.sql');fs.mkdirSync('dist/dxfeed/proto',{recursive:true});['PropTradingProtocol.proto','PropTradingCommonProtocol.proto'].forEach(f=>fs.copyFileSync('src/dxfeed/proto/'+f,'dist/dxfeed/proto/'+f))\"",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:migrate": "tsx src/db/migrate.ts"
@@ -19,6 +19,7 @@
     "dotenv": "^16.4.7",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.21.0",
+    "protobufjs": "^8.7.2",
     "tsx": "^4.19.2",
     "ws": "^8.18.0"
   },

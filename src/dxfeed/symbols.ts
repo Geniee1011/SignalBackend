@@ -47,3 +47,12 @@ export async function dxSymbolId(root: string): Promise<number | null> {
 export function clearSymbolCache(): void {
   cache = null;
 }
+
+/* NOTE — there is deliberately no feed-symbol BUILDER here (B11, settled live
+ * 2026-08-18). We used to construct "/MES:XCME" from the exchange, which the
+ * trading API resolves to nothing: it wants a DATED contract ("/MESU26:XCME"),
+ * and hand-rolling those means owning four different roll calendars — the index
+ * futures roll quarterly while GC and CL do not. The session's SymbolLookup
+ * already reports the current front month per root, so DxFeedTradingClient
+ * resolves roots against that table instead. Reintroducing a builder here would
+ * silently reintroduce the expired-contract bug. */

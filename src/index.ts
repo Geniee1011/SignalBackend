@@ -3,7 +3,7 @@ import { createSignalServer } from "./server/server.js";
 import { ensureAdmin } from "./auth/service.js";
 import { applySchema } from "./db/apply-schema.js";
 import { startCopyEngine, stopCopyEngine } from "./broker/copy-engine.js";
-import { PullAdapter } from "./broker/adapters/pull.js";
+import { selectExecutionAdapter } from "./dxfeed/execution.js";
 import { reapAbandoned } from "./broker/queue.js";
 
 if (!useDatabase) {
@@ -47,7 +47,7 @@ server.on("error", (err: NodeJS.ErrnoException) => {
  *
  * startCopyEngine is a no-op unless COPY_EXECUTION=1, so this is safe to call
  * unconditionally: a deploy can never begin queueing trades by accident. */
-const copyAdapter = new PullAdapter("atas");
+const copyAdapter = selectExecutionAdapter();
 startCopyEngine(copyAdapter);
 
 // Release orders a terminal collected but never confirmed (it crashed mid-place).

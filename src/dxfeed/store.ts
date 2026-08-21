@@ -54,6 +54,15 @@ export async function getLinkByAccountId(dxAccountId: string): Promise<DxFeedLin
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
+/** Look a subscriber up by dxFeed user id (subscription webhooks key on this). */
+export async function getLinkByDxUserId(dxUserId: string): Promise<DxFeedLink | null> {
+  const { rows } = await getPool().query(
+    `SELECT ${COLS} FROM "signal"."DxFeedAccount" WHERE "dxUserId" = $1`,
+    [dxUserId],
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
 /** Insert or update the whole link row (upsert on userId). */
 export async function upsertDxFeedLink(link: DxFeedLink): Promise<void> {
   await getPool().query(
