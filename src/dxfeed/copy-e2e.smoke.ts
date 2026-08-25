@@ -26,6 +26,7 @@ import { DxFeedTradingClient } from "./trading-ws.js";
 import { DxFeedAdapter } from "./adapter.js";
 import { setTradingClient } from "./trading-client.js";
 import { upsertDxFeedLink, deleteDxFeedLink } from "./store.js";
+import { verifyTradeReady } from "./readiness.js";
 import { AccountStatus } from "./types.js";
 import { loadSchema } from "./proto/codec.js";
 
@@ -69,12 +70,25 @@ async function main(): Promise<void> {
     const deadline = Date.now() + LOGIN_TIMEOUT_MS;
     while (!client.isConnected() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 250));
     if (!client.isConnected()) throw new Error("no login — sessions may be exhausted");
-    await new Promise((r) => setTimeout(r, 3_000));
+    // The account snapshot arrives asynchronously after login. Waiting a fixed
+    // 3s raced it and reported "no usable account", which reads like a
+    // permissions problem rather than "we asked too early" — poll instead.
+    const snapshotDeadline = Date.now() + 20_000;
+    while (client.knownAccounts().length === 0 && Date.now() < snapshotDeadline) {
+      await new Promise((r) => setTimeout(r, 250));
+    }
 
     const target = process.argv.find((a) => a.startsWith("--account="))?.split("=")[1]?.replace(/\D/g, "");
     const accounts = client.knownAccounts();
     const picked = target ? accounts.find(([, n]) => String(n) === target) : accounts[0];
-    if (!picked) throw new Error("no usable dxFeed account on this session");
+    if (!picked) {
+      const seen = accounts.map(([, n]) => n).join(", ") || "none";
+      throw new Error(
+        target
+          ? `account ${target} is not on this session — session sees: ${seen}`
+          : `no usable dxFeed account on this session — session sees: ${seen}`,
+      );
+    }
     accountRef = picked[0];
     const blocked = client.blockedReason(accountRef);
     if (blocked) throw new Error(`account ${picked[1]} cannot trade: ${blocked}`);
@@ -92,6 +106,28 @@ async function main(): Promise<void> {
       accountStatus: AccountStatus.ENABLED, subscriptionStatus: null,
       agreementSigned: true, agreementLink: null, platform: null,
     });
+
+    // --- the readiness gate, exercised exactly as production does it ---------
+    // A freshly linked subscriber is NOT tradeable: provisioning succeeding is no
+    // evidence the account will accept an order (B15/B16). Readiness has to be
+    // earned by a probe first — in production the sweep does this, here we do it
+    // inline so the run also proves the gate lets a good account through.
+    check("a freshly linked subscriber is NOT yet tradeable", (await adapter.isReady(userId)) === false);
+
+    const probe = await verifyTradeReady(userId);
+
+    // "Inconclusive" means the market is shut, not that anything is broken. The
+    // rest of this smoke places real orders, so every later step would fail for
+    // that one reason — say so once and stop, rather than reporting six failures
+    // that all mean "it is the weekend".
+    if (probe.inconclusive) {
+      console.log(`\n  CANNOT RUN NOW — ${probe.reason}`);
+      console.log("  The remaining steps place live orders. Re-run once the market is open");
+      console.log("  (CME futures reopen Sunday 18:00 ET; the daily break is 17:00-18:00 ET).\n");
+      return;
+    }
+
+    check("the readiness probe passes on this account", probe.ready, probe.reason ?? "");
 
     check("adapter reports the subscriber ready", await adapter.isReady(userId));
 

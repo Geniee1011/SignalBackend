@@ -1,5 +1,5 @@
 import type { BrokerAdapter, CloseIntent, OrderIntent, PlaceResult } from "../broker/adapter.js";
-import { getDxFeedLink } from "./store.js";
+import { getDxFeedLink, clearTradeVerified } from "./store.js";
 import { resolveSymbol } from "./symbols.js";
 import { getTradingClient } from "./trading-client.js";
 import { AccountStatus } from "./types.js";
@@ -30,8 +30,21 @@ export class DxFeedAdapter implements BrokerAdapter {
       link.accountStatus !== AccountStatus.ENABLED &&
       link.accountStatus !== AccountStatus.CHALLENGE_SUCCESS
     ) return false;
+
+    // Never proven to accept an order. Provisioning succeeding is NOT evidence of
+    // this — see readiness.ts. Routing signals here would drop them silently, so
+    // report a clean skip until verifyTradeReady() has earned it.
+    if (link.tradeVerifiedAt == null) return false;
+
     const client = getTradingClient();
-    return client != null && client.isConnected();
+    if (client == null || !client.isConnected()) return false;
+
+    // The account can also drop out of a live session (re-provisioned, disabled,
+    // risk-paused). Both checks are in-memory reads off the session snapshot.
+    if (client.accountNumberForRef && client.accountNumberForRef(link.dxAccountId) === undefined) return false;
+    if (client.blockedReason?.(link.dxAccountId)) return false;
+
+    return true;
   }
 
   async placeOrder(intent: OrderIntent): Promise<PlaceResult> {
@@ -58,7 +71,15 @@ export class DxFeedAdapter implements BrokerAdapter {
       });
       return { ok: true, brokerOrderId: res.brokerOrderId };
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      const message = (err as Error).message;
+      // An unacknowledged order is the silent-drop symptom the readiness gate
+      // exists for: the account looked fine and swallowed the order anyway.
+      // Withdraw readiness so the engine stops routing here until a probe passes
+      // again, rather than losing every subsequent signal the same way.
+      if (/order ack timeout/i.test(message)) {
+        await clearTradeVerified(intent.userId, `live order was not acknowledged: ${message}`);
+      }
+      return { ok: false, error: message };
     }
   }
 

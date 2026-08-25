@@ -4,6 +4,8 @@ import { ensureAdmin } from "./auth/service.js";
 import { applySchema } from "./db/apply-schema.js";
 import { startCopyEngine, stopCopyEngine } from "./broker/copy-engine.js";
 import { selectExecutionAdapter } from "./dxfeed/execution.js";
+import { DxFeedAdapter } from "./dxfeed/adapter.js";
+import { sweepUnverified } from "./dxfeed/readiness.js";
 import { reapAbandoned } from "./broker/queue.js";
 
 if (!useDatabase) {
@@ -59,6 +61,22 @@ const reaper = setInterval(() => {
   }).catch(() => {});
 }, 60_000);
 
+/* Trade-readiness sweep (dxFeed only).
+ *
+ * A newly provisioned dxFeed account can look perfectly healthy and still ignore
+ * OrderInsert without any rejection, so readiness has to be PROVEN by placing and
+ * cancelling one probe order. This drains the backlog of subscribers who have
+ * never passed, which is what turns a fresh signup into a tradeable one — without
+ * it, provisioning succeeds and the subscriber silently never trades.
+ *
+ * Slow on purpose: each probe is a real order. Off-hours failures are expected
+ * and simply retried on the next pass. */
+const readinessSweep = copyAdapter instanceof DxFeedAdapter
+  ? setInterval(() => {
+      void sweepUnverified(25).catch((e) => console.error("[dxfeed] readiness sweep failed:", (e as Error).message));
+    }, 5 * 60_000)
+  : null;
+
 server.listen(config.port, () => {
   console.log(`SignalBackend listening on http://localhost:${config.port}`);
   console.log(`  WebSocket   ws://localhost:${config.port}/ws`);
@@ -72,6 +90,7 @@ function shutdown() {
   console.log("\nShutting down…");
   stopCopyEngine();
   clearInterval(reaper);
+  if (readinessSweep) clearInterval(readinessSweep);
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();
 }

@@ -196,3 +196,17 @@ CREATE TABLE IF NOT EXISTS "signal"."DxFeedAccount" (
   "createdAt"          timestamptz NOT NULL DEFAULT now(),
   "updatedAt"          timestamptz NOT NULL DEFAULT now()
 );
+
+-- Trade readiness. Provisioning returning 200 does NOT mean the account can
+-- trade: a freshly provisioned identity can sit in a state where the trading
+-- session logs in, lists the account and reports it enabled, yet OrderInsert
+-- gets NO response at all — orders vanish with no rejection to detect. The only
+-- reliable test is to place a real (far-from-market, immediately cancelled)
+-- order and see it acked, so we do that ONCE and record the result here.
+--
+-- tradeVerifiedAt NULL = never proven tradeable; the copy engine must not route
+-- signals to this subscriber yet. Cleared again if a live order ever times out
+-- waiting for an ack, so a subscriber that regresses is re-probed instead of
+-- silently losing further orders.
+ALTER TABLE "signal"."DxFeedAccount" ADD COLUMN IF NOT EXISTS "tradeVerifiedAt" timestamptz;
+ALTER TABLE "signal"."DxFeedAccount" ADD COLUMN IF NOT EXISTS "tradeProbeError" text;

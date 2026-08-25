@@ -1,7 +1,7 @@
 import { getPool } from "../db/pool.js";
 import { config } from "../config.js";
 import { propfirm } from "./propfirm.js";
-import { getDxFeedLink, upsertDxFeedLink, type DxFeedLink } from "./store.js";
+import { getDxFeedLink, upsertDxFeedLink, type DxFeedLinkInput } from "./store.js";
 import {
   AccountMode, Currency, EncryptionMode, IdReference, UserType,
   type DataFeedProduct, type Platform,
@@ -31,7 +31,10 @@ function splitName(name: string | null, email: string): { firstName: string; las
   return { firstName: parts[0] || "Trader", lastName: parts.slice(1).join(" ") || parts[0] || "Account" };
 }
 
-export async function provisionSubscriber(userId: string, opts: ProvisionOptions = {}): Promise<DxFeedLink> {
+/* Returns the LINK ONLY. Provisioning deliberately does not confer trade
+ * readiness — a fully provisioned account can still silently swallow orders, so
+ * that is earned separately via verifyTradeReady() in readiness.ts. */
+export async function provisionSubscriber(userId: string, opts: ProvisionOptions = {}): Promise<DxFeedLinkInput> {
   const existing = await getDxFeedLink(userId);
   if (existing?.dxAccountId && existing?.dxSubscriptionId) return existing; // already done
 
@@ -45,7 +48,7 @@ export async function provisionSubscriber(userId: string, opts: ProvisionOptions
 
   const p = config.dxfeed.provisioning;
   const ruleId = opts.ruleId ?? p.ruleId;
-  const link: DxFeedLink = existing ?? {
+  const link: DxFeedLinkInput = existing ?? {
     userId, dxUserId: "", dxAccountId: null, dxSubscriptionId: null,
     accountStatus: null, subscriptionStatus: null,
     agreementSigned: false, agreementLink: null, platform: null,

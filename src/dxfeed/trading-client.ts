@@ -40,6 +40,18 @@ export interface DxTradingClient {
   placeEntry(order: DxEntryOrder): Promise<{ brokerOrderId: string }>;
   /** Flatten any open position (and cancel a still-resting entry) for a root symbol. */
   flatten(accountId: string, symbol: string): Promise<void>;
+
+  /* --- session introspection, used by the readiness gate ------------------
+   * Optional so the in-memory test doubles stay tiny; when absent the gate
+   * simply skips the corresponding check rather than failing closed on a fake.
+   * The live DxFeedTradingClient implements both. */
+
+  /** The numeric accountNumber for one of our account UUIDs, if this session
+   *  knows it at all. Absent = the account is not in the session snapshot, which
+   *  is the state a not-yet-usable provisioned account presents as. */
+  accountNumberForRef?(accountId: string): number | undefined;
+  /** Why this account would refuse an order, or null if it should accept one. */
+  blockedReason?(accountId: string): string | null;
 }
 
 let client: DxTradingClient | null = null;

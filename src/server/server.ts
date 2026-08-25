@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
-import { config } from "../config.js";
+import { config, dxfeedReady } from "../config.js";
 import { register, login, verifyToken, getUserById, type TokenPayload } from "../auth/service.js";
 import { getSignals, getSignalsRange, getMirrorSignals } from "../signals/source.js";
 import { getLink, connect as connectBroker, disconnect as disconnectBroker } from "../broker/links.js";
@@ -8,6 +8,9 @@ import { brokerCryptoReady } from "../broker/crypto.js";
 import { getCopySettings, updateCopySettings, sanitizeCopySettings } from "../broker/copy-settings.js";
 import { getBaseRisk, setBaseRisk } from "../broker/risk-config.js";
 import { handleDxFeedWebhook } from "../dxfeed/webhook.js";
+import { listReadiness, getDxFeedLink } from "../dxfeed/store.js";
+import { verifyTradeReady } from "../dxfeed/readiness.js";
+import { provisionSubscriber } from "../dxfeed/provision.js";
 import { collect, acknowledge, recentOrders } from "../broker/queue.js";
 import { getPerformance } from "../signals/performance.js";
 import {
@@ -237,6 +240,51 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return json(res, 200, { baseRisk: await setBaseRisk(body) }); // sanitized inside
   }
 
+  /* dxFeed trade readiness.
+   *
+   * A subscriber can be fully provisioned and still have their orders silently
+   * ignored, so the copy engine only routes to accounts proven by a probe. That
+   * makes "who is not tradeable, and why" an operational question someone has to
+   * be able to answer — hence this view, and a manual re-check for when the
+   * cause has been fixed and waiting for the 5-minute sweep is not good enough. */
+  if (path === "/api/admin/dxfeed/readiness" && req.method === "GET") {
+    if (!(await requireAdmin(req))) return json(res, 403, { error: "forbidden" });
+    // The adapter is reported so the UI can stay hidden entirely on the ATAS
+    // pull deployment, where "not provisioned at dxFeed" is true of everyone and
+    // means nothing.
+    const adapter = (process.env.EXECUTION_ADAPTER ?? "atas").toLowerCase() === "dxfeed" ? "dxfeed" : "atas";
+    return json(res, 200, { adapter, rows: await listReadiness() });
+  }
+  /* Create this subscriber's dxFeed identity (user -> trading account ->
+   * subscription). An ADMIN ACTION on purpose: it creates a real trading account
+   * at the prop firm, which is not something a self-serve registration should
+   * trigger. Idempotent — provisionSubscriber() resumes a partial run and is a
+   * no-op on an already-provisioned subscriber. */
+  if (path.startsWith("/api/admin/dxfeed/provision/") && req.method === "POST") {
+    if (!(await requireAdmin(req))) return json(res, 403, { error: "forbidden" });
+    if (!dxfeedReady) return json(res, 503, { error: "dxFeed is not configured (DXFEED_API_KEY is unset)." });
+    const id = decodeURIComponent(path.slice("/api/admin/dxfeed/provision/".length).split("/")[0] ?? "");
+    if (!id) return json(res, 400, { error: "missing user id" });
+    try {
+      return json(res, 200, await provisionSubscriber(id));
+    } catch (e) {
+      // Surface dxFeed's own message — "which subscriber and why" is the whole
+      // value here, and a bare 500 would send someone to the server logs.
+      return json(res, 502, { error: (e as Error).message });
+    }
+  }
+
+  if (path.startsWith("/api/admin/dxfeed/readiness/") && req.method === "POST") {
+    if (!(await requireAdmin(req))) return json(res, 403, { error: "forbidden" });
+    const id = decodeURIComponent(path.slice("/api/admin/dxfeed/readiness/".length).split("/")[0] ?? "");
+    if (!id) return json(res, 400, { error: "missing user id" });
+    // Places a real order (far from market so it cannot fill, and cancelled
+    // straight after), so this is a deliberate admin action — never something a
+    // page load or a GET could trigger.
+    const result = await verifyTradeReady(id);
+    return json(res, 200, result);
+  }
+
   // --- broker link (Tradovate), one account per subscriber ---
   if (path === "/api/broker" && req.method === "GET") {
     const payload = requireUser(req);
@@ -283,6 +331,24 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   }
 
   // --- auto-copy settings ---
+  /* Why a plain-language reason and not the raw probe error: this is read by the
+   * SUBSCRIBER, who cannot act on "AccountReferenceId not in session snapshot".
+   * What they need to know is whether their signals are being traded, and who
+   * fixes it if not — every branch here is something support can act on. */
+  async function tradeReadinessFor(userId: string): Promise<{ tradeReady: boolean | null; tradeBlockedReason: string | null }> {
+    if ((process.env.EXECUTION_ADAPTER ?? "atas").toLowerCase() !== "dxfeed") {
+      return { tradeReady: null, tradeBlockedReason: null };
+    }
+    const link = await getDxFeedLink(userId);
+    if (link?.tradeVerifiedAt != null) return { tradeReady: true, tradeBlockedReason: null };
+    return {
+      tradeReady: false,
+      tradeBlockedReason: !link?.dxAccountId
+        ? "Your trading account hasn't been set up yet. We'll email you as soon as it is."
+        : "Your account is still being checked — we place a test order before copying anything to it. This usually clears within a few minutes of the market being open.",
+    };
+  }
+
   if (path === "/api/copy/settings" && req.method === "GET") {
     const payload = requireUser(req);
     if (!payload) return json(res, 401, { error: "unauthorized" });
@@ -291,7 +357,13 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     // base inherits the global default, so surface that concrete number rather than a
     // blank. The engine reads the raw (possibly null) value straight from the DB.
     if (s.baseRisk == null) s.baseRisk = await getBaseRisk();
-    return json(res, 200, s);
+    /* Whether we would actually trade for them, reported alongside the settings
+     * the page already loads. Without this a subscriber can switch copying to
+     * "auto", see it saved, and have every signal silently skipped — the exact
+     * failure the readiness gate exists to prevent, moved up into the UI.
+     * null on the ATAS pull deployment, where no one has a dxFeed account and
+     * the question is meaningless. */
+    return json(res, 200, { ...s, ...(await tradeReadinessFor(payload.sub)) });
   }
   if (path === "/api/copy/settings" && (req.method === "PUT" || req.method === "POST")) {
     const payload = requireUser(req);
