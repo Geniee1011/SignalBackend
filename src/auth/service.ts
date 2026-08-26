@@ -89,6 +89,16 @@ export async function login(email: string, password: string): Promise<AuthResult
   return { token: signToken(user), user };
 }
 
+/** Admin-initiated password reset for a subscriber (no reset-email flow exists yet). */
+export async function setUserPassword(id: string, password: string): Promise<{ error: string } | { ok: true }> {
+  if (password.length < 6) return { error: "Password must be at least 6 characters." };
+  await getPool().query(
+    `UPDATE "signal"."User" SET "passwordHash" = $2, "updatedAt" = now() WHERE "id" = $1`,
+    [id, hashPassword(password)],
+  );
+  return { ok: true };
+}
+
 export async function getUserById(id: string): Promise<SignalUser | null> {
   const { rows } = await getPool().query(
     `SELECT "id","email","name","role","status" FROM "signal"."User" WHERE "id" = $1`,

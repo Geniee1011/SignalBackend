@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import { config, dxfeedReady } from "../config.js";
-import { register, login, verifyToken, getUserById, type TokenPayload } from "../auth/service.js";
+import { register, login, verifyToken, getUserById, setUserPassword, type TokenPayload } from "../auth/service.js";
 import { getSignals, getSignalsRange, getMirrorSignals } from "../signals/source.js";
 import { getLink, connect as connectBroker, disconnect as disconnectBroker } from "../broker/links.js";
 import { brokerCryptoReady } from "../broker/crypto.js";
@@ -222,9 +222,13 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!(await requireAdmin(req))) return json(res, 403, { error: "forbidden" });
     const id = decodeURIComponent(path.slice("/api/admin/users/".length).split("/")[0] ?? "");
     if (!id) return json(res, 400, { error: "missing user id" });
-    const body = await readJson<{ access?: unknown; status?: string }>(req);
+    const body = await readJson<{ access?: unknown; status?: string; password?: string }>(req);
     if (body?.access !== undefined) await updateUserAccess(id, sanitizeAccess(body.access));
     if (body?.status === "ACTIVE" || body?.status === "SUSPENDED") await setUserStatus(id, body.status);
+    if (body?.password) {
+      const result = await setUserPassword(id, body.password);
+      if ("error" in result) return json(res, 400, result);
+    }
     return json(res, 200, { ok: true });
   }
 
